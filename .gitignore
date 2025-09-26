@@ -79,3 +79,6 @@ teste_*.py
 # Output files
 output_*.xlsx
 *_output.*
+
+# Commit scripts (keep local only)
+# commit.py and commit.bat are for local use
