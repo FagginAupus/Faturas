@@ -21,7 +21,7 @@ def run_command(command, description=""):
     """Executa comando e retorna resultado"""
     try:
         if description:
-            print(f"📋 {description}...")
+            print(f"[INFO] {description}...")
 
         result = subprocess.run(
             command,
@@ -32,16 +32,16 @@ def run_command(command, description=""):
         )
 
         if result.returncode != 0:
-            print(f"❌ ERRO: {result.stderr}")
+            print(f"[ERRO] {result.stderr}")
             return False, result.stderr
 
         if result.stdout.strip():
-            print(f"✅ {result.stdout.strip()}")
+            print(f"[OK] {result.stdout.strip()}")
 
         return True, result.stdout
 
     except Exception as e:
-        print(f"❌ ERRO na execução: {e}")
+        print(f"[ERRO] Erro na execucao: {e}")
         return False, str(e)
 
 def check_git_status():
@@ -56,32 +56,32 @@ def check_git_status():
     return True, output
 
 def main():
-    print("🚀 SCRIPT DE COMMIT AUTOMÁTICO - FATURAS AUPUS")
+    print("SCRIPT DE COMMIT AUTOMATICO - FATURAS AUPUS")
     print("=" * 55)
 
     # Verificar se há alterações
     has_changes, status_output = check_git_status()
     if not has_changes:
-        print(f"ℹ️  {status_output}")
+        print(f"[INFO] {status_output}")
         input("\nPressione ENTER para sair...")
         return
 
-    print("📂 Alterações detectadas:")
+    print("Alteracoes detectadas:")
     for line in status_output.strip().split('\n'):
         if line.strip():
             status = line[:2].strip()
             file_name = line[3:].strip()
 
             if status == 'M':
-                print(f"   📝 Modificado: {file_name}")
+                print(f"   [MOD] Modificado: {file_name}")
             elif status == 'A':
-                print(f"   ➕ Adicionado: {file_name}")
+                print(f"   [ADD] Adicionado: {file_name}")
             elif status == 'D':
-                print(f"   ❌ Removido: {file_name}")
+                print(f"   [DEL] Removido: {file_name}")
             elif status == '??':
-                print(f"   📄 Novo arquivo: {file_name}")
+                print(f"   [NEW] Novo arquivo: {file_name}")
             else:
-                print(f"   🔄 {status}: {file_name}")
+                print(f"   [{status}] {file_name}")
 
     print("\n" + "=" * 55)
 
@@ -90,8 +90,8 @@ def main():
     default_message = f"Update: {brasilia_time}"
 
     # Solicitar mensagem adicional
-    print(f"💬 Mensagem padrão: '{default_message}'")
-    additional_message = input("\n📝 Digite mensagem adicional (ou ENTER para usar padrão): ").strip()
+    print(f"[MSG] Mensagem padrao: '{default_message}'")
+    additional_message = input("\n[INPUT] Digite mensagem adicional (ou ENTER para usar padrao): ").strip()
 
     # Construir mensagem final
     if additional_message:
@@ -99,17 +99,17 @@ def main():
     else:
         final_message = default_message
 
-    print(f"\n📋 Mensagem final do commit:")
+    print(f"\n[MSG] Mensagem final do commit:")
     print(f"   '{final_message}'")
 
     # Confirmar commit
-    confirm = input("\n❓ Confirmar commit e push? (s/N): ").strip().lower()
+    confirm = input("\n[?] Confirmar commit e push? (s/N): ").strip().lower()
     if confirm not in ['s', 'sim', 'y', 'yes']:
-        print("❌ Operação cancelada pelo usuário")
+        print("[CANCEL] Operacao cancelada pelo usuario")
         input("\nPressione ENTER para sair...")
         return
 
-    print("\n🔄 Iniciando processo de commit...")
+    print("\n[EXEC] Iniciando processo de commit...")
 
     # Adicionar todos os arquivos
     success, _ = run_command("git add .", "Adicionando arquivos")
@@ -130,9 +130,9 @@ def main():
         input("\nPressione ENTER para sair...")
         return
 
-    print("\n🎉 SUCESSO! Commit e push realizados com sucesso!")
-    print(f"⏰ Horário: {brasilia_time}")
-    print(f"💬 Mensagem: {final_message}")
+    print("\n[SUCESSO] Commit e push realizados com sucesso!")
+    print(f"[TIME] Horario: {brasilia_time}")
+    print(f"[MSG] Mensagem: {final_message}")
 
     input("\nPressione ENTER para sair...")
 
@@ -140,9 +140,9 @@ if __name__ == "__main__":
     try:
         main()
     except KeyboardInterrupt:
-        print("\n\n❌ Operação interrompida pelo usuário")
+        print("\n\n[CANCEL] Operacao interrompida pelo usuario")
         sys.exit(1)
     except Exception as e:
-        print(f"\n❌ ERRO INESPERADO: {e}")
+        print(f"\n[ERRO] ERRO INESPERADO: {e}")
         input("\nPressione ENTER para sair...")
         sys.exit(1)

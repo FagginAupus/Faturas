@@ -59,12 +59,14 @@ tmp/
 # Claude Code
 .claude/
 
-# Sensitive data
+# Sensitive data - PLANILHAS (mas não PDFs de exemplo)
 *.xlsx
 *.xls
-*.pdf
 *.docx
 *.doc
+
+# PDFs - Comentado para permitir PDFs de exemplo/teste
+# *.pdf
 
 # Email credentials (if any config files are added later)
 config.json
