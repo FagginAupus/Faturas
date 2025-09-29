@@ -54,6 +54,12 @@ class BConsumidorCompensadoExtractor(BaseExtractor):
 
         # Bandeiras
         self.bandeira_codigo = 0  # 0=Verde, 1=Vermelha, 2=Amarela, 3=Vermelha+Amarela
+        self.bandeira_quantidade = Decimal('0')
+        self.bandeira_valor = Decimal('0')
+
+        # Injection data (for SCEE)
+        self.injecao_quantidade = Decimal('0')
+        self.injecao_valor = Decimal('0')
 
         # Financial totals
         self.juros_total = Decimal('0')
@@ -118,6 +124,10 @@ class BConsumidorCompensadoExtractor(BaseExtractor):
         self.multa_total = Decimal('0')
         self.creditos_total = Decimal('0')
         self.bandeira_codigo = 0
+        self.bandeira_quantidade = Decimal('0')
+        self.bandeira_valor = Decimal('0')
+        self.injecao_quantidade = Decimal('0')
+        self.injecao_valor = Decimal('0')
 
     def _processar_pagina(self, page: fitz.Page, page_num: int, doc: fitz.Document):
         """
@@ -125,24 +135,39 @@ class BConsumidorCompensadoExtractor(BaseExtractor):
         Migrated from original system's page processing logic.
         """
         try:
-            # Extract text blocks with position information
-            blocks = page.get_text("dict")["blocks"]
+            # Extract full text and reconstruct proper lines for consumption data
+            texto_completo = page.get_text()
+            linhas_brutas = [linha.strip() for linha in texto_completo.split('\n') if linha.strip()]
 
-            for block in blocks:
-                if "lines" in block:
-                    for line in block["lines"]:
-                        for span in line["spans"]:
-                            text = span["text"].strip()
-                            if text:
-                                # Get block position
-                                bbox = span["bbox"]
-                                block_info = {
-                                    'x0': bbox[0], 'y0': bbox[1],
-                                    'x1': bbox[2], 'y1': bbox[3]
-                                }
+            # Reconstruct consumption lines by looking for patterns
+            linhas_processadas = self._reconstruct_consumption_lines(linhas_brutas)
 
-                                # Process text block
-                                self._processar_bloco_texto(text, block_info)
+            # Add debug print
+            if self.debug:
+                print(f"\n{'='*60}")
+                print(f"DEBUG EXTRATOR CONSUMO B COMPENSADO")
+                print(f"{'='*60}")
+                print(f"Total de linhas brutas: {len(linhas_brutas)}")
+                print(f"Total de linhas processadas: {len(linhas_processadas)}")
+                print(f"\nLinhas processadas para consumo:")
+                for i, linha in enumerate(linhas_processadas[:5]):
+                    print(f"  [{i}] {linha}")
+
+            # Process reconstructed consumption lines
+            for linha in linhas_processadas:
+                if self.debug:
+                    print(f"Processando linha: {linha}")
+
+                # Check if line contains consumption data
+                if self._is_consumption_line_new(linha):
+                    self._processar_linha_consumo_new(linha)
+
+            # Process original lines for SCEE and other data
+            for linha in linhas_brutas:
+                if self._is_scee_line(linha):
+                    self._processar_linha_scee(linha)
+                elif self._is_financial_line_new(linha):
+                    self._processar_linha_financeira_new(linha)
 
         except Exception as e:
             if self.debug:
@@ -175,17 +200,94 @@ class BConsumidorCompensadoExtractor(BaseExtractor):
         elif self._is_financial_line(text, parts):
             self._processar_linha_financeira(text, parts)
 
-    def _is_consumption_line(self, text: str, parts: List[str]) -> bool:
-        """Check if line contains consumption data."""
+    def _reconstruct_consumption_lines(self, linhas_brutas: List[str]) -> List[str]:
+        """
+        Reconstruct consumption lines from separated text fragments.
+        Based on the debug output, we need to combine:
+        - Item name (e.g., "ADC BANDEIRA VERMELHA")
+        - "kWh"
+        - Numbers (tarifa, quantidade, valor)
+        """
+        linhas_processadas = []
+
+        # Look for consumption indicators in sequential lines
         consumption_indicators = [
-            "CONSUMO", "ENERGIA ELÉTRICA", "kWh", "KWH"
+            "ADC BANDEIRA VERMELHA", "ADICIONAL BANDEIRA",
+            "CONSUMO NAO COMPENSADO", "CONSUMO NÃO COMPENSADO",
+            "CONSUMO SCEE",
+            "INJECAO SCEE", "INJEÇÃO SCEE"
         ]
 
-        # Must have kWh indicator and numeric values
-        has_kwh = any(indicator in text.upper() for indicator in ["KWH", "kWh"])
-        has_numeric = any(self._is_numeric_value(part) for part in parts)
+        i = 0
+        while i < len(linhas_brutas):
+            linha_atual = linhas_brutas[i]
 
-        return has_kwh and has_numeric and len(parts) >= 5
+            # Check if current line is a consumption indicator
+            is_consumption_start = any(indicator in linha_atual.upper() for indicator in consumption_indicators)
+
+            if is_consumption_start:
+                # Reconstruct the full consumption line
+                linha_completa = linha_atual
+
+                # Look ahead for kWh and numeric values
+                j = i + 1
+                valores_encontrados = []
+
+                # Collect next few lines to reconstruct the consumption line
+                while j < min(i + 10, len(linhas_brutas)):  # Look ahead max 10 lines
+                    próxima_linha = linhas_brutas[j]
+
+                    if "kWh" in próxima_linha or "KWH" in próxima_linha:
+                        linha_completa += " " + próxima_linha
+                    elif self._is_numeric_value(próxima_linha):
+                        valores_encontrados.append(próxima_linha)
+                        linha_completa += " " + próxima_linha
+
+                        # Stop when we have enough values (at least 5: tarifa, quantidade, valor_intermediario, valor_final)
+                        if len(valores_encontrados) >= 5:
+                            break
+                    elif próxima_linha in ["19%", "%"] or próxima_linha.endswith("%"):
+                        # Skip percentage lines but continue
+                        pass
+                    elif any(indicator in próxima_linha.upper() for indicator in consumption_indicators):
+                        # Found another consumption line, stop here
+                        break
+
+                    j += 1
+
+                if "kWh" in linha_completa and len(valores_encontrados) >= 2:
+                    linhas_processadas.append(linha_completa)
+                    if self.debug:
+                        print(f"   Linha reconstruida: {linha_completa}")
+
+                i = j  # Skip processed lines
+            else:
+                i += 1
+
+        return linhas_processadas
+
+    def _is_consumption_line_new(self, linha: str) -> bool:
+        """Check if line contains consumption data - NEW VERSION."""
+        linha_upper = linha.upper()
+
+        # Patterns we're looking for:
+        # "CONSUMO NÃO COMPENSADO kWh 100,00 0,964151 96,41"
+        # "CONSUMO SCEE kWh 709,00 0,643844 456,49"
+        # "ADC BANDEIRA VERMELHA kWh 100,00 0,101814 10,18"
+        # "INJEÇÃO SCEE - UC 10037100562 - GD I kWh 709,00 0,643844 -456,49"
+
+        indicators = [
+            "CONSUMO NÃO COMPENSADO", "CONSUMO NAO COMPENSADO",
+            "CONSUMO SCEE", "CONSUMO COMPENSADO",
+            "ADC BANDEIRA", "ADICIONAL BANDEIRA", "BANDEIRA",
+            "INJEÇÃO SCEE", "INJECAO SCEE", "INJECÃO SCEE"
+        ]
+
+        has_indicator = any(indicator in linha_upper for indicator in indicators)
+        has_kwh = "KWH" in linha_upper or "kWh" in linha
+        has_values = any(char.isdigit() for char in linha) and "," in linha
+
+        return has_indicator and has_kwh and has_values
 
     def _is_scee_text(self, text: str) -> bool:
         """Check if text contains SCEE information."""
@@ -203,51 +305,84 @@ class BConsumidorCompensadoExtractor(BaseExtractor):
         """Check if line is SCEE data line."""
         return self._is_scee_text(text)
 
-    def _is_bandeira_line(self, text: str, parts: List[str]) -> bool:
-        """Check if line contains bandeira tarifária data."""
-        bandeira_indicators = ["BANDEIRA", "ADICIONAL"]
-        return any(indicator in text.upper() for indicator in bandeira_indicators) and len(parts) >= 4
+    def _is_bandeira_line_new(self, linha: str) -> bool:
+        """Check if line contains bandeira tarifária data - NEW VERSION."""
+        linha_upper = linha.upper()
+        bandeira_indicators = ["ADC BANDEIRA", "ADICIONAL BANDEIRA", "BANDEIRA"]
+        has_kwh = "KWH" in linha_upper or "kWh" in linha
+        return any(indicator in linha_upper for indicator in bandeira_indicators) and has_kwh
 
-    def _is_financial_line(self, text: str, parts: List[str]) -> bool:
-        """Check if line contains financial data (juros, multa, etc)."""
-        financial_indicators = ["JUROS", "MULTA", "ILUMINAÇÃO", "ILUMINACAO"]
-        return any(indicator in text.upper() for indicator in financial_indicators)
+    def _is_financial_line_new(self, linha: str) -> bool:
+        """Check if line contains financial data (juros, multa, etc) - NEW VERSION."""
+        linha_upper = linha.upper()
+        financial_indicators = ["JUROS", "MULTA", "ILUMINAÇÃO", "ILUMINACAO", "CONTRIB"]
+        return any(indicator in linha_upper for indicator in financial_indicators)
 
-    def _processar_linha_consumo(self, text: str, parts: List[str]):
+    def _processar_linha_consumo_new(self, linha: str):
         """
-        Process consumption line.
-        Migrated from _processar_consumo_grupo_b in original system.
+        Process consumption line - NEW VERSION with QUANTIDADE and VALOR extraction.
+        Expected format: "ITEM kWh QUANTIDADE TARIFA VALOR %TRIB VALOR_TRIB BASE"
+        Examples:
+        - "CONSUMO NAO COMPENSADO kWh 100,00 0,964151 96,41 3,5 96,41 19% 18,32 0,745930"
+        - "CONSUMO SCEE kWh 709,00 0,643844 456,49 16,59 456,49 19% 86,73 0,498120"
+        - "ADC BANDEIRA VERMELHA kWh 100,00 0,101814 10,18 0,37 10,18 19% 1,93 0,078770"
         """
         try:
-            kwh_index = self._find_correct_kwh_index(parts)
-            if kwh_index == -1:
+            if self.debug:
+                print(f"   Processando linha consumo: {linha}")
+
+            # Split linha into parts
+            parts = linha.split()
+            if len(parts) < 5:
                 return
 
-            # Extract basic values (maintain original logic)
-            if kwh_index + 4 >= len(parts):
+            # Find kWh position
+            kwh_index = -1
+            for i, part in enumerate(parts):
+                if part.upper() in ['KWH', 'kWh']:
+                    kwh_index = i
+                    break
+
+            if kwh_index == -1 or kwh_index + 3 >= len(parts):
                 return
 
-            quantidade = safe_decimal_conversion(parts[kwh_index + 2].replace('.', ''))
-            tarifa = safe_decimal_conversion(parts[kwh_index + 1])
-            valor = safe_decimal_conversion(parts[kwh_index + 4])
+            # Extract values from expected positions
+            # Format: ITEM kWh TARIFA QUANTIDADE VALOR_INTERMEDIARIO VALOR_PRINCIPAL OUTROS...
+            # Based on patterns:
+            # "ADC BANDEIRA VERMELHA kWh 0,101814 100,00 0,37 10,18 1,93"
+            # "CONSUMO NÃO COMPENSADO kWh 0,964151 100,00 3,5 96,41 18,32"
+            # "CONSUMO SCEE kWh 0,643844 709,00 16,59 456,49 86,73"
 
-            # Extract tarifa sem imposto if available
-            tarifa_sem_imposto = Decimal('0')
-            if kwh_index + 7 < len(parts):
-                tarifa_sem_imposto = safe_decimal_conversion(parts[kwh_index + 7])
+            tarifa_str = parts[kwh_index + 1]      # First number after kWh (tarifa unitária)
+            quantidade_str = parts[kwh_index + 2]  # Second number after kWh (quantidade kWh)
 
-            # Identify consumption type and posto (for BRANCA)
-            tipo_consumo, posto = self._identificar_tipo_consumo(text)
+            # The main value is the 4th number after kWh (index + 4)
+            if kwh_index + 4 < len(parts):
+                valor_str = parts[kwh_index + 4]  # Fourth number after kWh (valor principal)
+            else:
+                valor_str = parts[kwh_index + 3]  # Fallback to third if fourth not available
+
+            # Convert to Decimal with comma handling
+            quantidade = self._convert_value_with_comma(quantidade_str)
+            tarifa = self._convert_value_with_comma(tarifa_str)
+            valor = self._convert_value_with_comma(valor_str)
+
+            # Handle negative values for injection
+            if valor_str.startswith('-'):
+                valor = -abs(valor)
+
+            # Identify consumption type
+            tipo_consumo = self._identificar_tipo_consumo_new(linha)
 
             if self.debug:
-                print(f"DEBUG: Consumo {tipo_consumo} {posto}: {quantidade} kWh x R$ {tarifa} = R$ {valor}")
+                print(f"   Valores extraidos: quantidade={quantidade}, tarifa={tarifa}, valor={valor}, tipo={tipo_consumo}")
 
-            # Store data based on type
-            self._armazenar_dados_consumo(tipo_consumo, posto, quantidade, tarifa, valor, tarifa_sem_imposto)
+            # Store data
+            self._armazenar_dados_consumo_new(tipo_consumo, quantidade, tarifa, valor)
 
         except Exception as e:
             if self.debug:
-                print(f"AVISO: Erro processando linha consumo: {e}")
+                print(f"   ERRO processando linha consumo: {e}")
 
     def _find_correct_kwh_index(self, parts: List[str]) -> int:
         """
@@ -259,70 +394,59 @@ class BConsumidorCompensadoExtractor(BaseExtractor):
                 return i
         return -1
 
-    def _identificar_tipo_consumo(self, text: str) -> tuple:
+    def _identificar_tipo_consumo_new(self, linha: str) -> str:
         """
-        Identify consumption type and posto.
-        Returns: (tipo, posto) where tipo = 'comp'|'n_comp'|'geral' and posto = 'p'|'fp'|'hi'|''
+        Identify consumption type from line - NEW VERSION.
+        Returns: 'comp', 'n_comp', 'bandeira', 'injecao'
         """
-        text_upper = text.upper()
+        linha_upper = linha.upper()
 
-        # Check for compensated/non-compensated
-        if "COMPENSADO" in text_upper and "NÃO" not in text_upper:
-            tipo = "comp"
-        elif "NÃO COMPENSADO" in text_upper or "NAO COMPENSADO" in text_upper:
-            tipo = "n_comp"
+        if "CONSUMO SCEE" in linha_upper or ("CONSUMO" in linha_upper and "COMPENSADO" in linha_upper and "NAO" not in linha_upper and "NÃO" not in linha_upper):
+            return "comp"
+        elif "CONSUMO NAO COMPENSADO" in linha_upper or "CONSUMO NÃO COMPENSADO" in linha_upper:
+            return "n_comp"
+        elif "ADC BANDEIRA" in linha_upper or "ADICIONAL BANDEIRA" in linha_upper or "BANDEIRA" in linha_upper:
+            return "bandeira"
+        elif "INJECAO SCEE" in linha_upper or "INJEÇÃO SCEE" in linha_upper:
+            return "injecao"
         else:
-            tipo = "geral"
+            return "geral"
 
-        # Check for posto horário (BRANCA tariff)
-        if "PONTA" in text_upper and "FORA" not in text_upper:
-            posto = "p"
-        elif "FORA PONTA" in text_upper or "FORA-PONTA" in text_upper:
-            posto = "fp"
-        elif "INTERMEDIÁRIO" in text_upper or "INTERMEDIARIO" in text_upper:
-            posto = "hi"
-        else:
-            posto = ""
-
-        return tipo, posto
-
-    def _armazenar_dados_consumo(self, tipo: str, posto: str, quantidade: Decimal,
-                                tarifa: Decimal, valor: Decimal, tarifa_si: Decimal):
-        """Store consumption data in appropriate accumulators."""
-        # Build field suffix
-        sufixo = f"_{posto}" if posto else ""
-
+    def _armazenar_dados_consumo_new(self, tipo: str, quantidade: Decimal, tarifa: Decimal, valor: Decimal):
+        """Store consumption data - NEW VERSION."""
         if tipo == "comp":
-            campo_consumo = f"consumo_comp{sufixo}"
-            campo_tarifa = f"rs_consumo_comp{sufixo}"
-            campo_valor = f"valor_consumo_comp{sufixo}"
-
-            self.consumo_comp[campo_consumo] = quantidade
-            self.rs_consumo_comp[campo_tarifa] = tarifa
-            self.valor_consumo_comp[campo_valor] = valor
-
-            # Store tarifa sem imposto if available
-            if tarifa_si > 0:
-                self.rs_consumo_comp[f"{campo_tarifa}_si"] = tarifa_si
+            self.consumo_comp["consumo_comp"] = quantidade
+            self.rs_consumo_comp["rs_consumo_comp"] = tarifa
+            self.valor_consumo_comp["valor_consumo_comp"] = valor
 
         elif tipo == "n_comp":
-            campo_consumo = f"consumo_n_comp{sufixo}"
-            campo_tarifa = f"rs_consumo_n_comp{sufixo}"
-            campo_valor = f"valor_consumo_n_comp{sufixo}"
+            self.consumo_n_comp["consumo_n_comp"] = quantidade
+            self.rs_consumo_n_comp["rs_consumo_n_comp"] = tarifa
+            self.valor_consumo_n_comp["valor_consumo_n_comp"] = valor
 
-            self.consumo_n_comp[campo_consumo] = quantidade
-            self.rs_consumo_n_comp[campo_tarifa] = tarifa
-            self.valor_consumo_n_comp[campo_valor] = valor
+        elif tipo == "bandeira":
+            # Store bandeira data in separate variables
+            if not hasattr(self, 'bandeira_quantidade'):
+                self.bandeira_quantidade = Decimal('0')
+                self.bandeira_valor = Decimal('0')
 
-            # Store tarifa sem imposto if available
-            if tarifa_si > 0:
-                self.rs_consumo_n_comp[f"{campo_tarifa}_si"] = tarifa_si
+            self.bandeira_quantidade = quantidade
+            self.bandeira_valor = valor
+            self.bandeira_codigo = 1  # Assume vermelha if detected
+
+        elif tipo == "injecao":
+            # Store injection data
+            if not hasattr(self, 'injecao_quantidade'):
+                self.injecao_quantidade = Decimal('0')
+                self.injecao_valor = Decimal('0')
+
+            self.injecao_quantidade = quantidade
+            self.injecao_valor = valor
 
         else:  # geral
-            if not posto:  # Only for general consumption
-                self.consumo_geral = quantidade
-                self.rs_consumo_geral = tarifa
-                self.valor_consumo_geral = valor
+            self.consumo_geral = quantidade
+            self.rs_consumo_geral = tarifa
+            self.valor_consumo_geral = valor
 
     def _processar_linha_scee(self, text: str):
         """
@@ -445,15 +569,11 @@ class BConsumidorCompensadoExtractor(BaseExtractor):
                     print(f"   OK: Saldo detectado: {saldo}")
                 break
 
-    def _processar_linha_bandeira(self, text: str, parts: List[str]):
-        """Process bandeira tarifária line."""
+    def _processar_linha_bandeira_new(self, linha: str):
+        """Process bandeira tarifária line - NEW VERSION."""
         try:
-            if "AMARELA" in text.upper():
-                # Extract bandeira amarela data
-                self._extrair_bandeira("amarela", text, parts)
-            elif "VERMELHA" in text.upper():
-                # Extract bandeira vermelha data
-                self._extrair_bandeira("vermelha", text, parts)
+            # Use the same processing as consumption line
+            self._processar_linha_consumo_new(linha)
         except Exception as e:
             if self.debug:
                 print(f"AVISO: Erro processando bandeira: {e}")
@@ -483,14 +603,15 @@ class BConsumidorCompensadoExtractor(BaseExtractor):
             if self.debug:
                 print(f"AVISO: Erro extraindo bandeira: {e}")
 
-    def _processar_linha_financeira(self, text: str, parts: List[str]):
-        """Process financial line (juros, multa, iluminação)."""
-        if "JUROS" in text.upper():
-            self._extrair_juros(text, parts)
-        elif "MULTA" in text.upper():
-            self._extrair_multa(text, parts)
-        elif "ILUMINAÇÃO" in text.upper() or "ILUMINACAO" in text.upper():
-            self._extrair_iluminacao(text, parts)
+    def _processar_linha_financeira_new(self, linha: str):
+        """Process financial line (juros, multa, iluminação) - NEW VERSION."""
+        linha_upper = linha.upper()
+        if "JUROS" in linha_upper:
+            self._extrair_juros_new(linha)
+        elif "MULTA" in linha_upper:
+            self._extrair_multa_new(linha)
+        elif "ILUMINAÇÃO" in linha_upper or "ILUMINACAO" in linha_upper:
+            self._extrair_iluminacao_new(linha)
 
     def _extrair_juros(self, text: str, parts: List[str]):
         """Extract juros data."""
@@ -539,6 +660,74 @@ class BConsumidorCompensadoExtractor(BaseExtractor):
         """Check if text represents a monetary value."""
         return self._is_numeric_value(text) and (',' in text or len(text.replace('.', '')) > 2)
 
+    def _convert_value_with_comma(self, valor_str: str) -> Decimal:
+        """
+        Convert value string with comma as decimal separator to Decimal.
+        Examples: "100,00" -> 100.00, "709,00" -> 709.00, "456,49" -> 456.49
+        """
+        try:
+            # Remove any spaces and handle negative
+            valor_str = valor_str.strip()
+            is_negative = valor_str.startswith('-')
+            if is_negative:
+                valor_str = valor_str[1:]
+
+            # Replace comma with dot for decimal conversion
+            valor_str_clean = valor_str.replace(',', '.')
+
+            # Remove thousand separators (dots before decimal)
+            if valor_str_clean.count('.') > 1:
+                # Split by dots, last one is decimal separator
+                parts = valor_str_clean.split('.')
+                valor_str_clean = ''.join(parts[:-1]) + '.' + parts[-1]
+
+            valor = Decimal(valor_str_clean)
+            return -valor if is_negative else valor
+
+        except Exception as e:
+            if self.debug:
+                print(f"   Erro convertendo valor '{valor_str}': {e}")
+            return Decimal('0')
+
+    def _extrair_juros_new(self, linha: str):
+        """Extract juros data - NEW VERSION."""
+        import re
+        # Look for monetary values in line
+        valores = re.findall(r'\d+[,.]\d+', linha)
+        for valor_str in valores:
+            if self._is_monetary_value(valor_str):
+                valor = self._convert_value_with_comma(valor_str)
+                self.juros_total += valor
+                if self.debug:
+                    print(f"   Juros detectado: R$ {valor}")
+                break
+
+    def _extrair_multa_new(self, linha: str):
+        """Extract multa data - NEW VERSION."""
+        import re
+        # Look for monetary values in line
+        valores = re.findall(r'\d+[,.]\d+', linha)
+        for valor_str in valores:
+            if self._is_monetary_value(valor_str):
+                valor = self._convert_value_with_comma(valor_str)
+                self.multa_total += valor
+                if self.debug:
+                    print(f"   Multa detectada: R$ {valor}")
+                break
+
+    def _extrair_iluminacao_new(self, linha: str):
+        """Extract iluminação data - NEW VERSION."""
+        import re
+        # Look for monetary values in line
+        valores = re.findall(r'\d+[,.]\d+', linha)
+        for valor_str in valores:
+            if self._is_monetary_value(valor_str):
+                valor = self._convert_value_with_comma(valor_str)
+                # Store illumination value (can be added to financial data)
+                if self.debug:
+                    print(f"   Iluminacao detectada: R$ {valor}")
+                break
+
     def _finalizar_extracao(self) -> Dict[str, Any]:
         """
         Finalize extraction and build result dictionary.
@@ -553,6 +742,22 @@ class BConsumidorCompensadoExtractor(BaseExtractor):
         result.update(self.consumo_n_comp)
         result.update(self.rs_consumo_n_comp)
         result.update(self.valor_consumo_n_comp)
+
+        # Add bandeira data
+        if hasattr(self, 'bandeira_quantidade') and self.bandeira_quantidade > 0:
+            result['bandeira_quantidade'] = self.bandeira_quantidade
+            result['bandeira_valor'] = self.bandeira_valor
+
+        # Add injection data
+        if hasattr(self, 'injecao_quantidade') and self.injecao_quantidade > 0:
+            result['injecao_quantidade'] = self.injecao_quantidade
+            result['injecao_valor'] = self.injecao_valor
+
+        # Calculate consumo total from meter reading or sum compensated + non-compensated
+        self._calcular_consumo_total(result)
+
+        # Calculate valor_consumo total
+        self._calcular_valor_consumo_total(result)
 
         # Add general consumption
         if self.consumo_geral:
@@ -571,6 +776,10 @@ class BConsumidorCompensadoExtractor(BaseExtractor):
 
         # Apply totalization logic (migrated from original)
         self._finalizar_totalizacoes(result)
+
+        # Print final debug report
+        if self.debug:
+            self._print_valores_extraidos(result)
 
         return result
 
@@ -729,6 +938,82 @@ class BConsumidorCompensadoExtractor(BaseExtractor):
         dados['bandeira_codigo'] = self.bandeira_codigo
 
         return dados
+
+    def _calcular_consumo_total(self, result: Dict[str, Any]):
+        """
+        Calculate total consumption from available data.
+        Priority: meter reading -> sum of compensated + non-compensated
+        """
+        try:
+            # First try to get from meter reading if available (would be extracted elsewhere)
+            # For now, calculate from available compensated + non-compensated
+
+            consumo_comp = result.get('consumo_comp', Decimal('0'))
+            consumo_n_comp = result.get('consumo_n_comp', Decimal('0'))
+
+            if isinstance(consumo_comp, str):
+                consumo_comp = Decimal(consumo_comp)
+            if isinstance(consumo_n_comp, str):
+                consumo_n_comp = Decimal(consumo_n_comp)
+
+            total_consumo = consumo_comp + consumo_n_comp
+
+            # Example from expected data: 709 + 100 = 809
+            if total_consumo > 0:
+                result['consumo'] = total_consumo
+                if self.debug:
+                    print(f"   Consumo total calculado: {total_consumo} kWh")
+
+        except Exception as e:
+            if self.debug:
+                print(f"   Erro calculando consumo total: {e}")
+
+    def _calcular_valor_consumo_total(self, result: Dict[str, Any]):
+        """
+        Calculate total consumption value.
+        """
+        try:
+            valor_comp = result.get('valor_consumo_comp', Decimal('0'))
+            valor_n_comp = result.get('valor_consumo_n_comp', Decimal('0'))
+            valor_bandeira = result.get('bandeira_valor', Decimal('0'))
+
+            if isinstance(valor_comp, str):
+                valor_comp = Decimal(valor_comp)
+            if isinstance(valor_n_comp, str):
+                valor_n_comp = Decimal(valor_n_comp)
+            if isinstance(valor_bandeira, str):
+                valor_bandeira = Decimal(valor_bandeira)
+
+            # Sum all consumption values: 456.49 + 96.41 + 10.18 = 563.08
+            total_valor = valor_comp + valor_n_comp + valor_bandeira
+
+            if total_valor > 0:
+                result['valor_consumo'] = total_valor
+                if self.debug:
+                    print(f"   Valor consumo total calculado: R$ {total_valor}")
+
+        except Exception as e:
+            if self.debug:
+                print(f"   Erro calculando valor consumo total: {e}")
+
+    def _print_valores_extraidos(self, result: Dict[str, Any]):
+        """
+        Print final extracted values for debugging.
+        """
+        print(f"\n{'='*60}")
+        print(f"VALORES EXTRAIDOS - CONSUMO")
+        print(f"{'='*60}")
+        print(f"QUANTIDADES:")
+        print(f"   consumo_total: {result.get('consumo', 0)}")
+        print(f"   consumo_compensado: {result.get('consumo_comp', 0)}")
+        print(f"   consumo_nao_compensado: {result.get('consumo_n_comp', 0)}")
+        print(f"   bandeira_quantidade: {result.get('bandeira_quantidade', 0)}")
+        print(f"\nVALORES:")
+        print(f"   valor_consumo_compensado: {result.get('valor_consumo_comp', 0)}")
+        print(f"   valor_consumo_nao_compensado: {result.get('valor_consumo_n_comp', 0)}")
+        print(f"   valor_bandeira: {result.get('bandeira_valor', 0)}")
+        print(f"   valor_total_consumo: {result.get('valor_consumo', 0)}")
+        print(f"{'='*60}\n")
 
     def extract_basic_data(self, texto_completo: str) -> Dict[str, Any]:
         """Extract basic invoice data using Common Extractor."""

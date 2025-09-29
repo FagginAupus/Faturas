@@ -8,6 +8,7 @@ import json
 import os
 from enum import Enum
 from decimal import Decimal, InvalidOperation
+import traceback
 
 # ================== FUNÇÃO GLOBAL PARA CONVERSÃO SEGURA ==================
 
@@ -69,7 +70,75 @@ def safe_decimal_conversion(value: str, campo: str = "") -> Decimal:
     except (ValueError, TypeError, InvalidOperation) as e:
         print(f"AVISO: Erro convertendo '{value}' para Decimal no campo '{campo}': {e}")
         return Decimal('0')
-    
+
+# ================== FUNÇÃO AUXILIAR PARA DEBUG ==================
+
+def print_resultado_extrator(nome_extrator, dados, sucesso=True):
+    """
+    Imprime resultado de um extrator de forma organizada
+    Separa campos por tipo: quantidade, valor, outros
+    """
+    simbolo = "[OK]" if sucesso else "[ERRO]"
+    print(f"\n{'='*60}")
+    print(f"{simbolo} EXTRATOR: {nome_extrator}")
+    print(f"{'='*60}")
+
+    if not sucesso:
+        print("EXTRACAO FALHOU - Verifique logs acima")
+        print(f"{'='*60}\n")
+        return
+
+    if not dados:
+        print("Nenhum dado extraido")
+        print(f"{'='*60}\n")
+        return
+
+    # Separa campos por tipo
+    quantidades = {}
+    valores = {}
+    outros = {}
+
+    for chave, valor in dados.items():
+        if 'valor_' in chave or 'valor' in chave.lower():
+            valores[chave] = valor
+        elif any(k in chave for k in ['consumo', 'saldo', 'energia', 'geracao', 'excedente', 'credito', 'quantidade']):
+            quantidades[chave] = valor
+        else:
+            outros[chave] = valor
+
+    # Imprime quantidades
+    if quantidades:
+        print("QUANTIDADES (kWh):")
+        for k, v in sorted(quantidades.items()):
+            try:
+                print(f"   {k}: {v}")
+            except (UnicodeEncodeError, OSError):
+                print(f"   {k}: [VALOR COM CARACTERES ESPECIAIS]")
+
+    # Imprime valores
+    if valores:
+        print("\nVALORES (R$):")
+        for k, v in sorted(valores.items()):
+            try:
+                if isinstance(v, (int, float)):
+                    print(f"   {k}: {v:.2f}")
+                else:
+                    print(f"   {k}: {v}")
+            except (UnicodeEncodeError, OSError):
+                print(f"   {k}: [VALOR COM CARACTERES ESPECIAIS]")
+
+    # Imprime outros
+    if outros:
+        print("\nOUTROS DADOS:")
+        for k, v in sorted(outros.items()):
+            try:
+                print(f"   {k}: {v}")
+            except (UnicodeEncodeError, OSError):
+                print(f"   {k}: [VALOR COM CARACTERES ESPECIAIS]")
+
+    print(f"\nTotal de campos extraidos: {len(dados)}")
+    print(f"{'='*60}\n")
+
 # ================== ENUMS ==================
 
 class GrupoTarifario(Enum):
@@ -1573,9 +1642,32 @@ class FaturaProcessor:
         """Processa uma fatura PDF e retorna os dados extraídos - VERSÃO CORRIGIDA"""
         doc = fitz.open(pdf_path)
 
+        # ================== DEBUG INICIAL DETALHADO ==================
+        print(f"\n{'#'*60}")
+        print(f"# INICIANDO EXTRACAO PDF")
+        print(f"# Arquivo: {os.path.basename(pdf_path)}")
+        print(f"# Data/Hora: {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}")
+        print(f"{'#'*60}\n")
+
+        # Extrair texto completo para análise inicial
+        texto_completo = ""
+        for page_num in range(len(doc)):
+            page = doc[page_num]
+            texto_completo += page.get_text()
+
+        print(f"Informacoes do texto extraido:")
+        print(f"   Total de caracteres: {len(texto_completo)}")
+        print(f"   Total de linhas: {len(texto_completo.splitlines())}")
+        print(f"   Total de paginas: {len(doc)}")
+        print(f"\nAmostra do texto (primeiros 500 caracteres):")
+        print(texto_completo[:500])
+        print(f"\nAmostra do texto (ultimos 500 caracteres):")
+        print(texto_completo[-500:])
+        print()
+
         # Resetar acumuladores dos extractors
         self._resetar_extractors()
-        
+
         # Processar todas as páginas
         for page_num in range(len(doc)):
             page = doc[page_num]
@@ -1584,78 +1676,63 @@ class FaturaProcessor:
         # Pós-processamento CORRIGIDO
         self._pos_processamento()
 
-        # NOVO: RELATÓRIO DETALHADO DOS DADOS EXTRAÍDOS
-        self._imprimir_relatorio_extracao(pdf_path)
+        # NOVO: RESUMO CONSOLIDADO DETALHADO
+        self._imprimir_resumo_consolidado(pdf_path)
         
         doc.close()
         return self.dados
     
-    def _imprimir_relatorio_extracao(self, pdf_path: str):
-        """Imprime relatório detalhado dos dados extraídos"""
-        print(f"\n{'='*80}")
-        print(f"LISTA: RELATÓRIO DE EXTRAÇÃO - {os.path.basename(pdf_path)}")
-        print(f"{'='*80}")
-        
-        # Dados básicos
-        print(f"  DADOS BÁSICOS:")
-        dados_basicos = ['uc', 'grupo', 'subgrupo', 'modalidade_tarifaria', 'tipo_fornecimento', 
-                        'mes_referencia', 'vencimento', 'valor_concessionaria', 'data_leitura', 'medidor']
-        for campo in dados_basicos:
-            if campo in self.dados:
-                valor = self.dados[campo]
-                print(f"   {campo}: {valor}")
-        
-        # Consumo
-        print(f"\n CONSUMO:")
-        campos_consumo = [k for k in self.dados.keys() if 'consumo' in k.lower() and 'rs_' not in k.lower()]
-        for campo in sorted(campos_consumo):
-            print(f"   {campo}: {self.dados[campo]}")
-        
-        # Tarifas
-        print(f"\n TARIFAS:")
-        campos_tarifas = [k for k in self.dados.keys() if 'rs_' in k.lower()]
-        for campo in sorted(campos_tarifas):
-            print(f"   {campo}: {self.dados[campo]}")
-        
-        # Valores monetários
-        print(f"\n VALORES:")
-        campos_valores = [k for k in self.dados.keys() if 'valor_' in k.lower()]
-        for campo in sorted(campos_valores):
-            print(f"   {campo}: {self.dados[campo]}")
-        
-        # Geração e SCEE
-        print(f"\n GERAÇÃO/SCEE:")
-        campos_geracao = [k for k in self.dados.keys() if any(termo in k.lower() for termo in ['geracao', 'injetada', 'saldo', 'credito', 'excedente'])]
-        for campo in sorted(campos_geracao):
-            print(f"   {campo}: {self.dados[campo]}")
-        
-        # Impostos
-        print(f"\n  IMPOSTOS:")
-        campos_impostos = [k for k in self.dados.keys() if any(termo in k.lower() for termo in ['icms', 'pis', 'cofins', 'aliquota'])]
-        for campo in sorted(campos_impostos):
-            valor = self.dados[campo]
-            if 'aliquota' in campo and isinstance(valor, Decimal):
-                print(f"   {campo}: {float(valor)*100:.4f}%")
-            else:
-                print(f"   {campo}: {valor}")
-        
-        # Bandeiras
-        print(f"\n BANDEIRAS:")
-        campos_bandeiras = [k for k in self.dados.keys() if 'bandeira' in k.lower()]
-        for campo in sorted(campos_bandeiras):
-            print(f"   {campo}: {self.dados[campo]}")
-        
-        # Outros
-        print(f"\nDATA: OUTROS:")
-        campos_outros = [k for k in self.dados.keys() if k not in dados_basicos and 
-                        not any(termo in k.lower() for termo in ['consumo', 'rs_', 'valor_', 'geracao', 'injetada', 
-                                                            'saldo', 'credito', 'excedente', 'icms', 'pis', 
-                                                            'cofins', 'aliquota', 'bandeira'])]
-        for campo in sorted(campos_outros):
-            print(f"   {campo}: {self.dados[campo]}")
-        
-        print(f"\nGRAFICO: TOTAL DE CAMPOS EXTRAÍDOS: {len(self.dados)}")
-        print(f"{'='*80}\n")
+    def _imprimir_resumo_consolidado(self, pdf_path: str):
+        """Imprime resumo consolidado detalhado da extração"""
+        print(f"\n{'='*60}")
+        print(f"RESUMO CONSOLIDADO DA EXTRACAO")
+        print(f"{'='*60}")
+
+        # Combina todos os dados
+        todos_dados = self.dados
+
+        # Conta por categoria
+        campos_quantidade = [k for k in todos_dados if any(x in k for x in ['consumo', 'saldo', 'energia', 'geracao', 'excedente', 'quantidade'])]
+        campos_valor = [k for k in todos_dados if 'valor' in k.lower()]
+        campos_zerados = [k for k, v in todos_dados.items() if v == 0 or v == 0.0]
+
+        print(f"Total de campos extraidos: {len(todos_dados)}")
+        print(f"Campos de quantidade: {len(campos_quantidade)}")
+        print(f"Campos de valor: {len(campos_valor)}")
+
+        if campos_zerados:
+            print(f"\nCAMPOS ZERADOS ({len(campos_zerados)}):")
+            for campo in campos_zerados:
+                print(f"   - {campo}")
+
+        print(f"\nUC: {todos_dados.get('uc', 'NAO EXTRAIDA')}")
+        print(f"Grupo: {todos_dados.get('grupo', 'NAO EXTRAIDO')}")
+        print(f"Consumo Total: {todos_dados.get('consumo', 0)} kWh")
+        print(f"Valor Total: R$ {todos_dados.get('valor_total', 0):.2f}")
+
+        # Mostrar principais campos extraídos por categoria
+        categorias = {
+            "DADOS BASICOS": ['uc', 'grupo', 'subgrupo', 'modalidade_tarifaria', 'tipo_fornecimento', 'mes_referencia', 'vencimento'],
+            "CONSUMO": [k for k in todos_dados.keys() if 'consumo' in k.lower() and 'valor' not in k.lower()],
+            "VALORES": [k for k in todos_dados.keys() if 'valor' in k.lower()],
+            "GERACAO/SCEE": [k for k in todos_dados.keys() if any(termo in k.lower() for termo in ['geracao', 'injetada', 'saldo', 'credito', 'excedente'])],
+            "IMPOSTOS": [k for k in todos_dados.keys() if any(termo in k.lower() for termo in ['icms', 'pis', 'cofins', 'aliquota'])]
+        }
+
+        for categoria, campos in categorias.items():
+            campos_existentes = [c for c in campos if c in todos_dados and todos_dados[c] not in [0, 0.0, '', None]]
+            if campos_existentes:
+                print(f"\n{categoria} ({len(campos_existentes)} campos):")
+                for campo in sorted(campos_existentes)[:5]:  # Mostrar apenas os 5 primeiros
+                    valor = todos_dados[campo]
+                    if 'aliquota' in campo and isinstance(valor, Decimal):
+                        print(f"   {campo}: {float(valor)*100:.4f}%")
+                    else:
+                        print(f"   {campo}: {valor}")
+                if len(campos_existentes) > 5:
+                    print(f"   ... e mais {len(campos_existentes) - 5} campos")
+
+        print(f"{'='*60}\n")
 
     # Adicionar estas funções à classe FaturaProcessor:
 
@@ -1752,6 +1829,7 @@ class FaturaProcessor:
         page_text = page.get_text()
 
         # PRIMEIRA PASSADA: Extrair dados básicos para obter o grupo
+        dados_basicos_extraidos = {}
         for block in text_blocks:
             x0, y0, x1, y1, text = block[:5]
             text = text.strip()
@@ -1759,22 +1837,40 @@ class FaturaProcessor:
 
             # Extrair dados básicos primeiro
             if 'dados_basicos' in self.extractors:
-                extracted_basicos = self.extractors['dados_basicos'].extract(text, block_info)
-                self.dados.update(extracted_basicos)
+                try:
+                    extracted_basicos = self.extractors['dados_basicos'].extract(text, block_info)
+                    self.dados.update(extracted_basicos)
+                    dados_basicos_extraidos.update(extracted_basicos)
+                except Exception as e:
+                    print_resultado_extrator("Dados Básicos", {}, sucesso=False)
+                    print(f"ERRO DETALHADO:")
+                    print(f"   Tipo: {type(e).__name__}")
+                    print(f"   Mensagem: {str(e)}")
+                    print(f"   Traceback:\n{traceback.format_exc()}")
+
+        # Imprimir resultado dos dados básicos após primeira passada
+        if dados_basicos_extraidos:
+            print_resultado_extrator("Dados Básicos", dados_basicos_extraidos, sucesso=True)
 
         # Obter grupo atual
         current_group = self.dados.get('grupo')
         
         # SEGUNDA PASSADA: Processar todos os outros extractors
+        extractors_resultados = {}
+
         for block in text_blocks:
             x0, y0, x1, y1, text = block[:5]
             text = text.strip()
             block_info = {'x0': x0, 'y0': y0, 'x1': x1, 'y1': y1, 'page_num': page_num, 'page': page}
 
             for extractor_name, extractor in self.extractors.items():
-                if extractor_name == 'dados_basicos': 
+                if extractor_name == 'dados_basicos':
                     continue
-                    
+
+                # Inicializar resultado do extractor se não existir
+                if extractor_name not in extractors_resultados:
+                    extractors_resultados[extractor_name] = {}
+
                 try:
                     #  ADICIONAR PROCESSAMENTO DE IRRIGAÇÃO
                     if extractor_name == 'irrigacao':
@@ -1789,38 +1885,68 @@ class FaturaProcessor:
                         extracted = extractor.extract(page_text, block_info)
                     else:
                         extracted = extractor.extract(text, block_info)
-                    
-                    self.dados.update(extracted)
-                    
+
+                    if extracted:  # Se extraiu alguma coisa
+                        self.dados.update(extracted)
+                        extractors_resultados[extractor_name].update(extracted)
+
                 except Exception as e:
-                    print(f"Erro no extractor {extractor_name}: {e}")
+                    print_resultado_extrator(extractor_name.title(), {}, sucesso=False)
+                    print(f"ERRO DETALHADO:")
+                    print(f"   Tipo: {type(e).__name__}")
+                    print(f"   Mensagem: {str(e)}")
+                    print(f"   Traceback:\n{traceback.format_exc()}")
                     continue
+
+        # Imprimir resultados de todos os extractors após segunda passada
+        for extractor_name, resultado in extractors_resultados.items():
+            if resultado:  # Se extraiu alguma coisa
+                print_resultado_extrator(extractor_name.title(), resultado, sucesso=True)
     
     def _processar_segunda_pagina(self, page):
         """Processa a segunda página se existir (para dados adicionais)"""
+        print(f"\nPROCESSANDO SEGUNDA PAGINA...")
+
         text_blocks = page.get_text("blocks")
         current_group = self.dados.get('grupo')
-        
+        extractors_resultados_p2 = {}
+
         for block in text_blocks:
             x0, y0, x1, y1, text = block[:5]
             text = text.strip()
             block_info = {'x0': x0, 'y0': y0, 'x1': x1, 'y1': y1, 'page_num': 1, 'page': page}
-            
+
             # Processar apenas extractors relevantes para segunda página
             extractors_segunda_pagina = ['consumo', 'tabela_leitura', 'impostos', 'creditos_saldos']
-            
+
             for extractor_name in extractors_segunda_pagina:
                 if extractor_name in self.extractors:
+                    # Inicializar resultado do extractor se não existir
+                    if extractor_name not in extractors_resultados_p2:
+                        extractors_resultados_p2[extractor_name] = {}
+
                     try:
                         extractor = self.extractors[extractor_name]
                         if extractor_name == 'consumo':
                             extracted = extractor.extract(text, block_info, grupo=current_group)
                         else:
                             extracted = extractor.extract(text, block_info)
-                        self.dados.update(extracted)
+
+                        if extracted:  # Se extraiu alguma coisa
+                            self.dados.update(extracted)
+                            extractors_resultados_p2[extractor_name].update(extracted)
+
                     except Exception as e:
-                        print(f"Erro no extractor {extractor_name} (página 2): {e}")
-                        continue
+                        print_resultado_extrator(f"{extractor_name.title()} (Página 2)", {}, sucesso=False)
+                        print(f"ERRO DETALHADO:")
+                        print(f"   Tipo: {type(e).__name__}")
+                        print(f"   Mensagem: {str(e)}")
+                        print(f"   Traceback:\n{traceback.format_exc()}")
+
+        # Imprimir resultados dos extractors da segunda página
+        for extractor_name, resultado in extractors_resultados_p2.items():
+            if resultado:  # Se extraiu alguma coisa
+                print_resultado_extrator(f"{extractor_name.title()} (Página 2)", resultado, sucesso=True)
     
     def _pos_processamento(self):
         """Executa pós-processamento dos dados extraídos"""

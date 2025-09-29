@@ -44,9 +44,42 @@ class SCEEExtractor:
         dados = {}
 
         try:
+            # Add comprehensive debug at start
+            if self.debug:
+                print(f"\n{'='*60}")
+                print(f"DEBUG EXTRATOR SCEE")
+                print(f"{'='*60}")
+                print(f"Texto total: {len(texto_completo)} caracteres")
+
             # Check if this invoice has SCEE information
             if not self._tem_informacoes_scee(texto_completo):
+                if self.debug:
+                    print("Nenhuma informacao SCEE encontrada.")
                 return self._default_scee_values()
+
+            # Debug: Show SCEE block if found
+            if "INFORMAÇÕES DO SCEE" in texto_completo or "INFORMACOES DO SCEE" in texto_completo:
+                inicio = texto_completo.find("INFORMAÇÕES DO SCEE")
+                if inicio == -1:
+                    inicio = texto_completo.find("INFORMACOES DO SCEE")
+
+                if inicio != -1:
+                    bloco = texto_completo[inicio:inicio+500]
+                    if self.debug:
+                        print(f"\nBLOCO SCEE ENCONTRADO:")
+                        print(bloco)
+                        print()
+                else:
+                    if self.debug:
+                        print("Bloco INFORMACOES DO SCEE nao encontrado!")
+
+            # Check for INJECAO SCEE line in table
+            if self.debug:
+                linhas = texto_completo.split('\n')
+                for linha in linhas:
+                    if "INJEÇÃO SCEE" in linha or "INJECAO SCEE" in linha:
+                        print(f"Linha INJECAO encontrada: {linha}")
+                        break
 
             # Extract generation data
             geracao_data = self._extrair_geracao_ciclo(texto_completo)
@@ -75,8 +108,20 @@ class SCEEExtractor:
             # Process UG data and set energia_injetada
             self._processar_dados_ugs(dados)
 
+            # Extract injection data from table (INJECAO SCEE line)
+            injecao_data = self._extrair_injecao_scee(texto_completo)
+            dados.update(injecao_data)
+
+            # Try to get injection data from external source (B extractor results) if available
+            # This addresses cases where the line reconstruction didn't capture the right values
+            self._tentar_injecao_externa(dados, texto_completo)
+
+            # Print final debug summary
+            if self.debug:
+                self._print_valores_extraidos(dados)
+
             if self.debug and dados:
-                print(f"[SCEE] Extraídos {len(dados)} campos SCEE")
+                print(f"[SCEE] Extraidos {len(dados)} campos SCEE")
 
         except Exception as e:
             if self.debug:
@@ -105,23 +150,27 @@ class SCEEExtractor:
         if self.debug:
             print(f"[SCEE] Extraindo geração ciclo...")
 
-        # PADRÕES MÚLTIPLOS para maior robustez
+        # PADRÕES MÚLTIPLOS para maior robustez - formato brasileiro
         geracao_patterns = [
             r'GERAÇÃO CICLO.*?KWH:\s*UC\s*(\d+)\s*:\s*([\d.,]+)',
             r'GERACAO CICLO.*?KWH:\s*UC\s*(\d+)\s*:\s*([\d.,]+)',
-            r'GERAÇÃO CICLO.*?UC\s*(\d+).*?([\d.,]+)',
-            r'GERACAO CICLO.*?UC\s*(\d+).*?([\d.,]+)'
+            r'GERAÇÃO CICLO.*?UC\s*(\d+).*?:\s*([\d.,]+)',
+            r'GERACAO CICLO.*?UC\s*(\d+).*?:\s*([\d.,]+)'
         ]
 
         geracao_match = None
         for pattern in geracao_patterns:
             geracao_match = re.search(pattern, texto, re.IGNORECASE)
             if geracao_match:
+                if self.debug:
+                    print(f"   Padrão geração encontrado: {pattern}")
+                    print(f"   Match: {geracao_match.group(0)}")
                 break
 
         if geracao_match:
             uc_geradora = geracao_match.group(1)
-            geracao_total = safe_decimal_conversion(geracao_match.group(2))
+            geracao_valor_str = geracao_match.group(2)
+            geracao_total = self._converter_valor_brasileiro(geracao_valor_str)
 
             geracao_matches.append({
                 'uc': uc_geradora,
@@ -182,22 +231,26 @@ class SCEEExtractor:
         if self.debug:
             print(f"[SCEE] Extraindo excedente recebido...")
 
-        # PADRÕES MÚLTIPLOS para maior robustez
+        # PADRÕES MÚLTIPLOS para maior robustez - formato brasileiro
         excedente_patterns = [
             r'EXCEDENTE RECEBIDO KWH:\s*UC\s*(\d+)\s*:\s*([\d.,]+)',
-            r'EXCEDENTE RECEBIDO.*?UC\s*(\d+).*?([\d.,]+)',
-            r'ENERGIA EXCEDENTE.*?UC\s*(\d+).*?([\d.,]+)'
+            r'EXCEDENTE RECEBIDO.*?UC\s*(\d+).*?:\s*([\d.,]+)',
+            r'ENERGIA EXCEDENTE.*?UC\s*(\d+).*?:\s*([\d.,]+)'
         ]
 
         excedente_match = None
         for pattern in excedente_patterns:
             excedente_match = re.search(pattern, texto, re.IGNORECASE)
             if excedente_match:
+                if self.debug:
+                    print(f"   Padrão excedente encontrado: {pattern}")
+                    print(f"   Match: {excedente_match.group(0)}")
                 break
 
         if excedente_match:
             uc = excedente_match.group(1)
-            excedente_total = safe_decimal_conversion(excedente_match.group(2))
+            excedente_valor_str = excedente_match.group(2)
+            excedente_total = self._converter_valor_brasileiro(excedente_valor_str)
 
             excedente_matches.append({
                 'uc': uc,
@@ -254,7 +307,7 @@ class SCEEExtractor:
         if self.debug:
             print(f"[SCEE] Extraindo crédito recebido...")
 
-        # MÚLTIPLOS PADRÕES para maior robustez
+        # MÚLTIPLOS PADRÕES para maior robustez - formato brasileiro
         credito_patterns = [
             r'CRÉDITO RECEBIDO KWH\s+([\d.,]+)',
             r'CREDITO RECEBIDO KWH\s+([\d.,]+)',
@@ -267,11 +320,12 @@ class SCEEExtractor:
         for pattern in credito_patterns:
             match = re.search(pattern, texto, re.IGNORECASE)
             if match:
-                valor_credito = safe_decimal_conversion(match.group(1))
+                credito_valor_str = match.group(1)
+                valor_credito = self._converter_valor_brasileiro(credito_valor_str)
                 resultado['credito_recebido'] = valor_credito
 
                 if self.debug:
-                    print(f"   OK: Crédito detectado: {valor_credito}")
+                    print(f"   OK: Crédito detectado: {valor_credito} (string: {credito_valor_str})")
                 break
 
         if 'credito_recebido' not in resultado:
@@ -311,7 +365,7 @@ class SCEEExtractor:
                 print(f"       P={saldo_p}, FP={saldo_fp}, HR={saldo_hr}, HI={saldo_hi}")
                 print(f"       Total: {saldo_total}")
         else:
-            # PADRÕES CONVENCIONAL MÚLTIPLOS
+            # PADRÕES CONVENCIONAL MÚLTIPLOS - formato brasileiro
             saldo_conv_patterns = [
                 r'SALDO KWH:\s*([\d.,]+)(?=,|\s|$)',
                 r'SALDO DO CICLO.*?KWH.*?([\d.,]+)',
@@ -321,11 +375,12 @@ class SCEEExtractor:
             for pattern in saldo_conv_patterns:
                 saldo_conv_match = re.search(pattern, texto, re.IGNORECASE)
                 if saldo_conv_match:
-                    saldo_total = safe_decimal_conversion(saldo_conv_match.group(1))
+                    saldo_valor_str = saldo_conv_match.group(1)
+                    saldo_total = self._converter_valor_brasileiro(saldo_valor_str)
                     resultado['saldo'] = saldo_total
 
                     if self.debug:
-                        print(f"   OK: Saldo Convencional detectado: {saldo_total}")
+                        print(f"   OK: Saldo Convencional detectado: {saldo_total} (string: {saldo_valor_str})")
                     break
 
         # Default saldo if not found
@@ -449,6 +504,221 @@ class SCEEExtractor:
                         print(f"   OK: Rateio {idx}: UC {uc} = {percentual}%")
 
         return resultado
+
+    def _extrair_injecao_scee(self, texto: str) -> Dict[str, Any]:
+        """
+        Extract data from INJECAO SCEE line in consumption table.
+        Format: "INJEÇÃO SCEE - UC 10037100562 - GD I kWh 709,00 0,643844 -456,49"
+        Returns quantidade (709,00) and valor (456,49 positive)
+        """
+        resultado = {}
+
+        if self.debug:
+            print(f"[SCEE] Extraindo dados de injeção...")
+
+        # Look for INJECAO SCEE line and extract values
+        # First try to find a fully reconstructed line with all values
+        pattern_completo = r'INJE[ÇC][ÃA]O SCEE.*?kWh\s+([\d.,]+)\s+([\d.,]+)\s+([-]?[\d.,]+)'
+        match_completo = re.search(pattern_completo, texto, re.IGNORECASE)
+
+        if match_completo:
+            quantidade_str = match_completo.group(1)  # 709,00
+            tarifa_str = match_completo.group(2)      # 0,643844
+            valor_str = match_completo.group(3)       # -456,49
+
+            # Convert values
+            quantidade = self._converter_valor_brasileiro(quantidade_str)
+            valor = abs(self._converter_valor_brasileiro(valor_str))  # Always positive
+
+            resultado['energia_injetada'] = quantidade
+            resultado['valor_energia_injetada'] = valor
+
+            if self.debug:
+                print(f"   Linha INJECAO completa encontrada:")
+                print(f"   Match: {match_completo.group(0)}")
+                print(f"   Quantidade injetada: {quantidade} kWh")
+                print(f"   Valor energia injetada: R$ {valor}")
+        else:
+            # Fallback: process line by line if full pattern not found
+            linhas = texto.split('\n')
+            for i, linha in enumerate(linhas):
+                if "INJEÇÃO SCEE" in linha or "INJECAO SCEE" in linha:
+                    if self.debug:
+                        print(f"   Linha INJECAO encontrada: {linha}")
+
+                    # Extract UC number
+                    uc_match = re.search(r'UC\s*(\d+)', linha)
+                    if uc_match:
+                        uc_number = uc_match.group(1)
+                        if self.debug:
+                            print(f"   UC extraida: {uc_number}")
+
+                    # Try to find values in next few lines after INJECAO line
+                    valores_numericos = []
+                    for j in range(i + 1, min(i + 10, len(linhas))):
+                        linha_seguinte = linhas[j].strip()
+
+                        # Look for numeric values that could be quantidade/valor
+                        numeric_matches = re.findall(r'([-]?[\d.,]+)', linha_seguinte)
+                        for match in numeric_matches:
+                            if re.match(r'^[-]?[\d.,]+$', match):  # Pure numeric value
+                                valores_numericos.append(match)
+
+                        # Stop if we have enough values or found next item
+                        if len(valores_numericos) >= 3:
+                            break
+                        if any(word in linha_seguinte.upper() for word in ['CONTRIB', 'ITENS', 'TOTAL']):
+                            break
+
+                    if len(valores_numericos) >= 3:
+                        # Based on pattern from B extractor: [tarifa, quantidade, valor_intermediario, valor_principal]
+                        # From debug: 0,643844 709,00 -16,59 -456,49
+                        # We want: quantidade = 709,00, valor = 456,49
+
+                        # Try to identify which is quantidade (should be larger integer-like) and valor (larger absolute)
+                        valores_convertidos = []
+                        for val in valores_numericos[:5]:  # Check first 5 values
+                            try:
+                                converted = self._converter_valor_brasileiro(val)
+                                valores_convertidos.append((val, abs(converted)))
+                            except:
+                                continue
+
+                        if len(valores_convertidos) >= 2:
+                            # Sort by absolute value to find the largest ones
+                            valores_ordenados = sorted(valores_convertidos, key=lambda x: x[1], reverse=True)
+
+                            # Find quantidade: should be the largest value, typically hundreds (709.0)
+                            quantidade_str = valores_ordenados[0][0]
+                            quantidade = self._converter_valor_brasileiro(quantidade_str)
+
+                            # Find valor: should be the largest VALUE among those > 100
+                            # Expected pattern: 709.00 (quantidade), 456.49 (valor), smaller values (tarifa, etc)
+                            valor_str = None
+                            for val_str, val_abs in valores_ordenados[1:]:  # Skip the quantidade
+                                if val_abs > 100:  # Value should be > 100 for meaningful energy cost
+                                    valor_str = val_str
+                                    break
+
+                            # Fallback to second largest if no good valor found
+                            if not valor_str:
+                                valor_str = valores_ordenados[1][0] if len(valores_ordenados) > 1 else valores_ordenados[0][0]
+
+                            valor = abs(self._converter_valor_brasileiro(valor_str))
+
+                            resultado['energia_injetada'] = quantidade
+                            resultado['valor_energia_injetada'] = valor
+
+                            if self.debug:
+                                print(f"   Valores reconstruidos das linhas seguintes:")
+                                print(f"   Valores encontrados: {valores_numericos}")
+                                print(f"   Valores convertidos e ordenados: {valores_ordenados}")
+                                print(f"   Quantidade injetada: {quantidade} kWh (de {quantidade_str})")
+                                print(f"   Valor energia injetada: R$ {valor} (de {valor_str})")
+                            break
+                    else:
+                        if self.debug:
+                            print(f"   Valores insuficientes nas linhas seguintes: {valores_numericos}")
+
+        return resultado
+
+    def _tentar_injecao_externa(self, dados: Dict[str, Any], texto_completo: str):
+        """
+        Try to get injection data from reconstructed lines (like from B extractor).
+        This is a fallback when the basic line-by-line extraction fails.
+        """
+        if self.debug:
+            print(f"[SCEE] Tentando capturar injeção de fonte externa...")
+
+        # Look for patterns that indicate already processed data
+        # Pattern from B extractor: "INJEÇÃO SCEE - UC 10037100562 - GD I kWh 709,00 0,643844 -456,49"
+        pattern_completo = r'INJE[ÇC][ÃA]O SCEE.*?kWh\s+([\d.,]+)\s+([\d.,]+)\s+([-]?[\d.,]+)\s+([-]?[\d.,]+)'
+        match = re.search(pattern_completo, texto_completo, re.IGNORECASE)
+
+        if match:
+            # Expected: kWh QUANTIDADE TARIFA VALOR_INTERMEDIARIO VALOR_PRINCIPAL
+            quantidade_str = match.group(1)  # 709,00
+            valor_principal_str = match.group(4)  # -456,49
+
+            quantidade = self._converter_valor_brasileiro(quantidade_str)
+            valor_principal = abs(self._converter_valor_brasileiro(valor_principal_str))
+
+            # Only override if we got better values
+            if quantidade > 0 and valor_principal > 100:  # Reasonable thresholds
+                dados['energia_injetada'] = quantidade
+                dados['valor_energia_injetada'] = valor_principal
+
+                if self.debug:
+                    print(f"   Valores de injeção capturados de fonte externa:")
+                    print(f"   Match completo: {match.group(0)}")
+                    print(f"   energia_injetada: {quantidade} kWh")
+                    print(f"   valor_energia_injetada: R$ {valor_principal}")
+            else:
+                if self.debug:
+                    print(f"   Valores externos não passaram na validação: qtd={quantidade}, val={valor_principal}")
+        else:
+            # Final fallback: use credito_recebido as energia_injetada (common pattern)
+            if dados.get('credito_recebido', 0) > 0 and dados.get('energia_injetada', 0) == 0:
+                dados['energia_injetada'] = dados['credito_recebido']
+                if self.debug:
+                    print(f"   Fallback: energia_injetada = credito_recebido = {dados['energia_injetada']}")
+
+    def _converter_valor_brasileiro(self, valor_str: str) -> Decimal:
+        """
+        Convert Brazilian number format to Decimal.
+        Examples: "5.128,26" -> 5128.26, "959,50" -> 959.50, "709,00" -> 709.00
+        Also handles trailing commas: "5.128,26," -> 5128.26
+        """
+        try:
+            # Clean the string - remove trailing commas, spaces, and unwanted characters
+            valor_str = valor_str.strip().rstrip(',').rstrip()
+
+            # Handle negative values
+            is_negative = valor_str.startswith('-')
+            if is_negative:
+                valor_str = valor_str[1:]
+
+            # Remove thousand separators (dots) and replace comma with dot
+            if ',' in valor_str:
+                # Split by comma to get integer and decimal parts
+                parts = valor_str.split(',')
+                if len(parts) == 2:
+                    integer_part = parts[0].replace('.', '')  # Remove dots from integer part
+                    decimal_part = parts[1]
+                    valor_clean = f"{integer_part}.{decimal_part}"
+                else:
+                    valor_clean = valor_str.replace('.', '').replace(',', '.')
+            else:
+                valor_clean = valor_str.replace('.', '')  # Only thousand separators
+
+            result = Decimal(valor_clean)
+            return -result if is_negative else result
+
+        except Exception as e:
+            if self.debug:
+                print(f"   Erro convertendo valor '{valor_str}': {e}")
+            return Decimal('0')
+
+    def _print_valores_extraidos(self, dados: Dict[str, Any]):
+        """
+        Print final extracted SCEE values for debugging.
+        """
+        print(f"\n{'='*60}")
+        print(f"VALORES EXTRAIDOS - SCEE")
+        print(f"{'='*60}")
+        print(f"QUANTIDADES (kWh):")
+        print(f"   geracao_ciclo: {dados.get('geracao_ciclo', 0)}")
+        print(f"   excedente_recebido: {dados.get('excedente_recebido', 0)}")
+        print(f"   credito_recebido: {dados.get('credito_recebido', 0)}")
+        print(f"   saldo: {dados.get('saldo', 0)}")
+        print(f"   energia_injetada: {dados.get('energia_injetada', 0)}")
+        print(f"\nVALORES (R$):")
+        print(f"   valor_energia_injetada: {dados.get('valor_energia_injetada', 0)}")
+        print(f"\nUCs GERADORAS:")
+        print(f"   uc_geradora_1: {dados.get('uc_geradora_1', '')}")
+        print(f"   uc_geradora_2: {dados.get('uc_geradora_2', '')}")
+        print(f"   uc_geradora_3: {dados.get('uc_geradora_3', '')}")
+        print(f"{'='*60}\n")
 
     def _processar_dados_ugs(self, dados: Dict[str, Any]):
         """
