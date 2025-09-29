@@ -105,9 +105,19 @@ class SCEEExtractor:
         if self.debug:
             print(f"[SCEE] Extraindo geração ciclo...")
 
-        # PADRÃO PRINCIPAL: "GERAÇÃO CICLO (6/2025) KWH: UC 10037114075 : 58.010,82"
-        geracao_pattern = r'GERAÇÃO CICLO.*?KWH:\s*UC\s*(\d+)\s*:\s*([\d.,]+)'
-        geracao_match = re.search(geracao_pattern, texto, re.IGNORECASE)
+        # PADRÕES MÚLTIPLOS para maior robustez
+        geracao_patterns = [
+            r'GERAÇÃO CICLO.*?KWH:\s*UC\s*(\d+)\s*:\s*([\d.,]+)',
+            r'GERACAO CICLO.*?KWH:\s*UC\s*(\d+)\s*:\s*([\d.,]+)',
+            r'GERAÇÃO CICLO.*?UC\s*(\d+).*?([\d.,]+)',
+            r'GERACAO CICLO.*?UC\s*(\d+).*?([\d.,]+)'
+        ]
+
+        geracao_match = None
+        for pattern in geracao_patterns:
+            geracao_match = re.search(pattern, texto, re.IGNORECASE)
+            if geracao_match:
+                break
 
         if geracao_match:
             uc_geradora = geracao_match.group(1)
@@ -172,9 +182,18 @@ class SCEEExtractor:
         if self.debug:
             print(f"[SCEE] Extraindo excedente recebido...")
 
-        # PADRÃO CONVENCIONAL: "EXCEDENTE RECEBIDO KWH: UC 10037114075 : 16.370,65"
-        excedente_pattern = r'EXCEDENTE RECEBIDO KWH:\s*UC\s*(\d+)\s*:\s*([\d.,]+)'
-        excedente_match = re.search(excedente_pattern, texto, re.IGNORECASE)
+        # PADRÕES MÚLTIPLOS para maior robustez
+        excedente_patterns = [
+            r'EXCEDENTE RECEBIDO KWH:\s*UC\s*(\d+)\s*:\s*([\d.,]+)',
+            r'EXCEDENTE RECEBIDO.*?UC\s*(\d+).*?([\d.,]+)',
+            r'ENERGIA EXCEDENTE.*?UC\s*(\d+).*?([\d.,]+)'
+        ]
+
+        excedente_match = None
+        for pattern in excedente_patterns:
+            excedente_match = re.search(pattern, texto, re.IGNORECASE)
+            if excedente_match:
+                break
 
         if excedente_match:
             uc = excedente_match.group(1)
@@ -235,12 +254,14 @@ class SCEEExtractor:
         if self.debug:
             print(f"[SCEE] Extraindo crédito recebido...")
 
-        # PADRÃO: "CRÉDITO RECEBIDO KWH 1.234,56"
+        # MÚLTIPLOS PADRÕES para maior robustez
         credito_patterns = [
             r'CRÉDITO RECEBIDO KWH\s+([\d.,]+)',
             r'CREDITO RECEBIDO KWH\s+([\d.,]+)',
             r'CRÉDITO RECEBIDO.*?([\d.,]+)',
-            r'CREDITO RECEBIDO.*?([\d.,]+)'
+            r'CREDITO RECEBIDO.*?([\d.,]+)',
+            r'CRÉDITO DE ENERGIA.*?([\d.,]+)',
+            r'CREDITO DE ENERGIA.*?([\d.,]+)'
         ]
 
         for pattern in credito_patterns:
@@ -290,16 +311,22 @@ class SCEEExtractor:
                 print(f"       P={saldo_p}, FP={saldo_fp}, HR={saldo_hr}, HI={saldo_hi}")
                 print(f"       Total: {saldo_total}")
         else:
-            # PADRÃO CONVENCIONAL: "SALDO KWH: 1.234,56"
-            saldo_conv_pattern = r'SALDO KWH:\s*([\d.,]+)(?=,|\s|$)'
-            saldo_conv_match = re.search(saldo_conv_pattern, texto, re.IGNORECASE)
+            # PADRÕES CONVENCIONAL MÚLTIPLOS
+            saldo_conv_patterns = [
+                r'SALDO KWH:\s*([\d.,]+)(?=,|\s|$)',
+                r'SALDO DO CICLO.*?KWH.*?([\d.,]+)',
+                r'SALDO.*?([\d.,]+)\s*KWH'
+            ]
 
-            if saldo_conv_match:
-                saldo_total = safe_decimal_conversion(saldo_conv_match.group(1))
-                resultado['saldo'] = saldo_total
+            for pattern in saldo_conv_patterns:
+                saldo_conv_match = re.search(pattern, texto, re.IGNORECASE)
+                if saldo_conv_match:
+                    saldo_total = safe_decimal_conversion(saldo_conv_match.group(1))
+                    resultado['saldo'] = saldo_total
 
-                if self.debug:
-                    print(f"   OK: Saldo Convencional detectado: {saldo_total}")
+                    if self.debug:
+                        print(f"   OK: Saldo Convencional detectado: {saldo_total}")
+                    break
 
         # Default saldo if not found
         if 'saldo' not in resultado:
@@ -336,14 +363,20 @@ class SCEEExtractor:
             if self.debug:
                 print(f"   OK: Saldo 30 dias Branca: P={saldo_30_p}, FP={saldo_30_fp}, HR={saldo_30_hr}, HI={saldo_30_hi}")
         else:
-            # PADRÃO CONVENCIONAL
-            saldo_30_conv_pattern = r'SALDO A EXPIRAR EM 30 DIAS KWH:\s*([\d.,]+)(?=,|\s|$)'
-            saldo_30_conv_match = re.search(saldo_30_conv_pattern, texto, re.IGNORECASE)
+            # PADRÕES CONVENCIONAL MÚLTIPLOS para 30 dias
+            saldo_30_conv_patterns = [
+                r'SALDO A EXPIRAR EM 30 DIAS KWH:\s*([\d.,]+)(?=,|\s|$)',
+                r'A EXPIRAR EM 30 DIAS.*?([\d.,]+)',
+                r'EXPIRAR.*?30.*?DIAS.*?([\d.,]+)'
+            ]
 
-            if saldo_30_conv_match:
-                resultado['saldo_30'] = safe_decimal_conversion(saldo_30_conv_match.group(1))
-                if self.debug:
-                    print(f"   OK: Saldo 30 dias: {resultado['saldo_30']}")
+            for pattern in saldo_30_conv_patterns:
+                saldo_30_conv_match = re.search(pattern, texto, re.IGNORECASE)
+                if saldo_30_conv_match:
+                    resultado['saldo_30'] = safe_decimal_conversion(saldo_30_conv_match.group(1))
+                    if self.debug:
+                        print(f"   OK: Saldo 30 dias: {resultado['saldo_30']}")
+                    break
 
         # SALDO A EXPIRAR EM 60 DIAS
         # PADRÃO TARIFA BRANCA
@@ -365,22 +398,34 @@ class SCEEExtractor:
             if self.debug:
                 print(f"   OK: Saldo 60 dias Branca: P={saldo_60_p}, FP={saldo_60_fp}, HR={saldo_60_hr}, HI={saldo_60_hi}")
         else:
-            # PADRÃO CONVENCIONAL
-            saldo_60_conv_pattern = r'SALDO A EXPIRAR EM 60 DIAS KWH:\s*([\d.,]+)(?=,|\s|$)'
-            saldo_60_conv_match = re.search(saldo_60_conv_pattern, texto, re.IGNORECASE)
+            # PADRÕES CONVENCIONAL MÚLTIPLOS para 60 dias
+            saldo_60_conv_patterns = [
+                r'SALDO A EXPIRAR EM 60 DIAS KWH:\s*([\d.,]+)(?=,|\s|$)',
+                r'A EXPIRAR EM 60 DIAS.*?([\d.,]+)',
+                r'EXPIRAR.*?60.*?DIAS.*?([\d.,]+)'
+            ]
 
-            if saldo_60_conv_match:
-                resultado['saldo_60'] = safe_decimal_conversion(saldo_60_conv_match.group(1))
-                if self.debug:
-                    print(f"   OK: Saldo 60 dias: {resultado['saldo_60']}")
+            for pattern in saldo_60_conv_patterns:
+                saldo_60_conv_match = re.search(pattern, texto, re.IGNORECASE)
+                if saldo_60_conv_match:
+                    resultado['saldo_60'] = safe_decimal_conversion(saldo_60_conv_match.group(1))
+                    if self.debug:
+                        print(f"   OK: Saldo 60 dias: {resultado['saldo_60']}")
+                    break
 
         return resultado
 
     def _extrair_rateio_geracao(self, texto: str) -> Dict[str, Any]:
-        """Extract rateio geração data."""
+        """
+        Extract generation rateio (distribution) data.
+        Based on original CreditosSaldosExtractor logic.
+        """
         resultado = {}
 
-        # PADRÃO: "CADASTRO RATEIO GERAÇÃO: UC 12345 = 100%"
+        if self.debug:
+            print(f"[SCEE] Extraindo rateio de geração...")
+
+        # PADRÃO PRINCIPAL: "CADASTRO RATEIO GERAÇÃO: UC 12345 = 100%"
         rateio_pattern = r'CADASTRO RATEIO GERAÇÃO:\s*UC\s*(\d+)\s*=\s*([\d.,]+%?)'
         rateio_match = re.search(rateio_pattern, texto, re.IGNORECASE)
 
@@ -389,33 +434,135 @@ class SCEEExtractor:
             if self.debug:
                 print(f"   OK: Rateio: UC {rateio_match.group(1)} = {rateio_match.group(2)}")
 
+        # PADRÃO ALTERNATIVO: Múltiplas UCs com percentuais
+        # "RATEIO DA GERAÇÃO: UC 10037114075 (45%), UC 10037114024 (55%)"
+        rateio_multiplo_pattern = r'RATEIO.*?UC\s*(\d+).*?([\d,]+)%'
+        rateios_multiplos = re.findall(rateio_multiplo_pattern, texto, re.IGNORECASE)
+
+        if rateios_multiplos:
+            for idx, (uc, percentual) in enumerate(rateios_multiplos, 1):
+                if idx <= 3:  # Máximo 3 UGs
+                    resultado[f'uc_geradora_{idx}'] = uc
+                    resultado[f'rateio_{idx}'] = safe_decimal_conversion(percentual) / Decimal('100')  # Converter para decimal
+
+                    if self.debug:
+                        print(f"   OK: Rateio {idx}: UC {uc} = {percentual}%")
+
         return resultado
 
     def _processar_dados_ugs(self, dados: Dict[str, Any]):
-        """Process UG data and calculate energia_injetada."""
-        # Calculate energia_injetada from generation data
-        geracao_raw = dados.get('_geracao_ugs_raw', [])
-        if geracao_raw:
-            energia_injetada_total = sum(ug['total'] for ug in geracao_raw)
-            dados['energia_injetada'] = energia_injetada_total
+        """
+        Process multiple UG data and set energia_injetada.
+        CRITICAL: energia_injetada is used by Calculadora_AUPUS.py
+        Based on original logic from CreditosSaldosExtractor.
+        """
+        if self.debug:
+            print(f"[SCEE] Processando dados de UGs...")
 
+        # Coletar todas as geracoes e excedentes
+        geracoes = []
+        excedentes = []
+
+        # Extrair de registros brutos de geração
+        if '_geracao_ugs_raw' in dados:
+            for item in dados['_geracao_ugs_raw']:
+                total_geracao = item.get('total', Decimal('0'))
+                if total_geracao > 0:
+                    geracoes.append(total_geracao)
+
+                # Armazenar UCs geradoras (máximo 3)
+                if len(geracoes) <= 3:
+                    dados[f'uc_geradora_{len(geracoes)}'] = item.get('uc', '')
+
+            if self.debug and geracoes:
+                print(f"   Geracoes encontradas: {len(geracoes)} UGs")
+                for i, geracao in enumerate(geracoes, 1):
+                    print(f"     UG {i}: {geracao} kWh")
+
+        # Extrair de registros brutos de excedente
+        if '_excedente_ugs_raw' in dados:
+            for item in dados['_excedente_ugs_raw']:
+                total_excedente = item.get('total', Decimal('0'))
+                if total_excedente > 0:
+                    excedentes.append(total_excedente)
+
+            if self.debug and excedentes:
+                print(f"   Excedentes encontrados: {len(excedentes)} UGs")
+
+        # CRITICAL LOGIC: energia_injetada priority - COPIED FROM ORIGINAL
+        # 1. Preferir excedente_recebido (já calculado)
+        # 2. Fallback para geracao_ciclo
+        # 3. Fallback para soma das geracoes
+        # 4. Fallback para soma dos excedentes
+
+        energia_injetada_calculada = Decimal('0')
+
+        if dados.get('excedente_recebido', Decimal('0')) > 0:
+            energia_injetada_calculada = dados['excedente_recebido']
             if self.debug:
-                print(f"[SCEE] Energia injetada total calculada: {energia_injetada_total}")
+                print(f"   energia_injetada = excedente_recebido: {energia_injetada_calculada}")
+        elif dados.get('geracao_ciclo', Decimal('0')) > 0:
+            energia_injetada_calculada = dados['geracao_ciclo']
+            if self.debug:
+                print(f"   energia_injetada = geracao_ciclo: {energia_injetada_calculada}")
+        elif geracoes:
+            energia_injetada_calculada = sum(geracoes)
+            if self.debug:
+                print(f"   energia_injetada = soma geracoes: {energia_injetada_calculada}")
+        elif excedentes:
+            energia_injetada_calculada = sum(excedentes)
+            if self.debug:
+                print(f"   energia_injetada = soma excedentes: {energia_injetada_calculada}")
         else:
-            dados['energia_injetada'] = Decimal('0')
+            energia_injetada_calculada = Decimal('0')
+            if self.debug:
+                print(f"   energia_injetada = 0 (nenhum dado encontrado)")
 
-        # Clean up raw data (not needed in final result)
+        # CRITICAL: Set energia_injetada (usado pela Calculadora_AUPUS.py)
+        dados['energia_injetada'] = energia_injetada_calculada
+
+        # Garantir que UCs geradoras existam mesmo que vazias
+        for i in range(1, 4):  # uc_geradora_1, uc_geradora_2, uc_geradora_3
+            uc_key = f'uc_geradora_{i}'
+            if uc_key not in dados:
+                dados[uc_key] = ''
+
+        # Limpar campos internos temporarios
         dados.pop('_geracao_ugs_raw', None)
         dados.pop('_excedente_ugs_raw', None)
 
+        if self.debug:
+            print(f"[SCEE] Processamento UGs concluído:")
+            print(f"   energia_injetada FINAL: {dados['energia_injetada']}")
+            print(f"   UCs geradoras: {dados.get('uc_geradora_1', '')}, {dados.get('uc_geradora_2', '')}, {dados.get('uc_geradora_3', '')}")
+
     def _default_scee_values(self) -> Dict[str, Any]:
-        """Return default SCEE values for invoices without SCEE."""
+        """
+        Return default SCEE values when invoice has no SCEE.
+        Based on original CreditosSaldosExtractor behavior.
+        """
+        if self.debug:
+            print(f"[SCEE] Aplicando valores padrão (sem SCEE)")
+
         return {
+            # Saldos principais
             'saldo': Decimal('0'),
+            'saldo_30': Decimal('0'),
+            'saldo_60': Decimal('0'),
+
+            # Energias
             'excedente_recebido': Decimal('0'),
             'credito_recebido': Decimal('0'),
-            'energia_injetada': Decimal('0'),
+            'energia_injetada': Decimal('0'),  # CRITICAL para Calculadora_AUPUS
             'geracao_ciclo': Decimal('0'),
+
+            # UCs geradoras
             'uc_geradora_1': '',
-            'uc_geradora_2': ''
+            'uc_geradora_2': '',
+            'uc_geradora_3': '',
+
+            # Rateios
+            'rateio_1': Decimal('0'),
+            'rateio_2': Decimal('0'),
+            'rateio_3': Decimal('0')
         }
