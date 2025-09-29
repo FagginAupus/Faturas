@@ -460,9 +460,28 @@ class BConsumidorCompensadoExtractor(BaseExtractor):
 
     def _extrair_bandeira(self, tipo: str, text: str, parts: List[str]):
         """Extract bandeira data."""
-        # Implementation would be similar to original BandeiraExtractor
-        # For now, placeholder to maintain structure
-        pass
+        try:
+            # Find numeric value in parts for bandeira cost
+            for part in parts:
+                if self._is_monetary_value(part):
+                    valor = safe_decimal_conversion(part)
+
+                    # Store bandeira data based on type
+                    if tipo == "amarela":
+                        self.bandeira_codigo = 2
+                        if self.debug:
+                            print(f"   OK: Bandeira Amarela detectada: R$ {valor}")
+                    elif tipo == "vermelha":
+                        if self.bandeira_codigo == 2:
+                            self.bandeira_codigo = 3  # Vermelha + Amarela
+                        else:
+                            self.bandeira_codigo = 1
+                        if self.debug:
+                            print(f"   OK: Bandeira Vermelha detectada: R$ {valor}")
+                    break
+        except Exception as e:
+            if self.debug:
+                print(f"AVISO: Erro extraindo bandeira: {e}")
 
     def _processar_linha_financeira(self, text: str, parts: List[str]):
         """Process financial line (juros, multa, iluminação)."""
@@ -497,8 +516,14 @@ class BConsumidorCompensadoExtractor(BaseExtractor):
 
     def _extrair_iluminacao(self, text: str, parts: List[str]):
         """Extract iluminação data."""
-        # Implementation placeholder
-        pass
+        # Find numeric value in parts
+        for part in parts:
+            if self._is_monetary_value(part):
+                valor = safe_decimal_conversion(part)
+                # Store iluminação value (would be added to result in finalization)
+                if self.debug:
+                    print(f"   OK: Iluminação detectada: R$ {valor}")
+                break
 
     def _is_numeric_value(self, text: str) -> bool:
         """Check if text represents a numeric value."""
@@ -675,3 +700,101 @@ class BConsumidorCompensadoExtractor(BaseExtractor):
             print(f"   {ug}: {dados[ug]}")
 
         print(f"{'='*60}")
+
+    def _ensure_required_fields(self, dados: Dict[str, Any]) -> Dict[str, Any]:
+        """Ensure all required fields are present with correct types."""
+        # Ensure decimal fields
+        decimal_fields = [
+            'consumo', 'consumo_comp', 'consumo_n_comp',
+            'valor_consumo', 'valor_consumo_comp', 'valor_consumo_n_comp',
+            'rs_consumo', 'rs_consumo_comp', 'rs_consumo_n_comp',
+            'saldo', 'excedente_recebido', 'credito_recebido',
+            'energia_injetada', 'geracao_ciclo',
+            'valor_juros', 'valor_multa', 'valor_iluminacao'
+        ]
+
+        for field in decimal_fields:
+            if field in dados and not isinstance(dados[field], Decimal):
+                dados[field] = safe_decimal_conversion(str(dados[field]))
+            elif field not in dados:
+                dados[field] = Decimal('0')
+
+        # Ensure string fields
+        string_fields = ['uc_geradora_1', 'uc_geradora_2', 'uc_geradora_3']
+        for field in string_fields:
+            if field not in dados:
+                dados[field] = ''
+
+        # Add bandeira code
+        dados['bandeira_codigo'] = self.bandeira_codigo
+
+        return dados
+
+    def extract_basic_data(self, texto_completo: str) -> Dict[str, Any]:
+        """Extract basic invoice data using Common Extractor."""
+        from extractors.common.dados_basicos_extractor import DadosBasicosExtractor
+        extractor = DadosBasicosExtractor()
+        return extractor.extract_basic_data(texto_completo)
+
+    def extract_tax_data(self, texto_completo: str) -> Dict[str, Any]:
+        """Extract tax data using Common Extractor."""
+        from extractors.common.impostos_extractor import ImpostosExtractor
+        extractor = ImpostosExtractor()
+        return extractor.extract_tax_data(texto_completo)
+
+    def extract_financial_data(self, texto_completo: str) -> Dict[str, Any]:
+        """Extract financial data using Common Extractor."""
+        from extractors.common.financeiro_extractor import FinanceiroExtractor
+        extractor = FinanceiroExtractor()
+        return extractor.extract_financial_data(texto_completo)
+
+    def extract_scee_data(self, texto_completo: str) -> Dict[str, Any]:
+        """Extract SCEE data using Common Extractor."""
+        from extractors.common.scee_extractor import SCEEExtractor
+        extractor = SCEEExtractor()
+        return extractor.extract_scee_data(texto_completo)
+
+    def extract_complete(self, pdf_path: str) -> Dict[str, Any]:
+        """
+        Complete extraction using all Common Extractors + Group B specific logic.
+        This method combines data from all extractors for complete compatibility.
+        """
+        try:
+            # Extract full text from PDF
+            doc = self._open_pdf(pdf_path)
+            texto_completo = ""
+
+            for page_num in range(doc.page_count):
+                page = doc[page_num]
+                texto_completo += page.get_text()
+
+            self._close_pdf_safely(doc)
+
+            # Use Common Extractors for shared data
+            dados_basicos = self.extract_basic_data(texto_completo)
+            dados_impostos = self.extract_tax_data(texto_completo)
+            dados_financeiros = self.extract_financial_data(texto_completo)
+            dados_scee = self.extract_scee_data(texto_completo)
+
+            # Extract Group B specific consumption data
+            dados_consumo = self.extract(pdf_path)
+
+            # Merge all data
+            resultado_final = {}
+            resultado_final.update(dados_basicos)
+            resultado_final.update(dados_impostos)
+            resultado_final.update(dados_financeiros)
+            resultado_final.update(dados_scee)
+            resultado_final.update(dados_consumo)
+
+            # Ensure compatibility fields
+            resultado_final = self._ensure_required_fields(resultado_final)
+
+            if self.debug:
+                print(f"[B_COMPENSADO] Extração completa: {len(resultado_final)} campos")
+
+            return resultado_final
+
+        except Exception as e:
+            self._error_print(f"Erro na extração completa B compensado: {e}")
+            return {"erro": str(e)}

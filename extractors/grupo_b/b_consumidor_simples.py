@@ -268,8 +268,29 @@ class BConsumidorSimplesExtractor(BaseExtractor):
                 print(f"AVISO: Erro processando bandeira: {e}")
 
     def _extrair_bandeira(self, tipo: str, text: str, parts: List[str]):
-        """Extract bandeira data - placeholder for now."""
-        pass
+        """Extract bandeira data."""
+        try:
+            # Find numeric value in parts for bandeira cost
+            for part in parts:
+                if self._is_monetary_value(part):
+                    valor = safe_decimal_conversion(part)
+
+                    # Store bandeira data based on type
+                    if tipo == "amarela":
+                        self.bandeira_codigo = 2
+                        if self.debug:
+                            print(f"   OK: Bandeira Amarela detectada: R$ {valor}")
+                    elif tipo == "vermelha":
+                        if self.bandeira_codigo == 2:
+                            self.bandeira_codigo = 3  # Vermelha + Amarela
+                        else:
+                            self.bandeira_codigo = 1
+                        if self.debug:
+                            print(f"   OK: Bandeira Vermelha detectada: R$ {valor}")
+                    break
+        except Exception as e:
+            if self.debug:
+                print(f"AVISO: Erro extraindo bandeira: {e}")
 
     def _processar_linha_financeira(self, text: str, parts: List[str]):
         """Process financial line (juros, multa, iluminação)."""
@@ -423,3 +444,64 @@ class BConsumidorSimplesExtractor(BaseExtractor):
                 print(f"   {field}: {dados[field]}")
 
         print(f"{'='*60}")
+
+    def extract_basic_data(self, texto_completo: str) -> Dict[str, Any]:
+        """Extract basic invoice data using Common Extractor."""
+        from extractors.common.dados_basicos_extractor import DadosBasicosExtractor
+        extractor = DadosBasicosExtractor()
+        return extractor.extract_basic_data(texto_completo)
+
+    def extract_tax_data(self, texto_completo: str) -> Dict[str, Any]:
+        """Extract tax data using Common Extractor."""
+        from extractors.common.impostos_extractor import ImpostosExtractor
+        extractor = ImpostosExtractor()
+        return extractor.extract_tax_data(texto_completo)
+
+    def extract_financial_data(self, texto_completo: str) -> Dict[str, Any]:
+        """Extract financial data using Common Extractor."""
+        from extractors.common.financeiro_extractor import FinanceiroExtractor
+        extractor = FinanceiroExtractor()
+        return extractor.extract_financial_data(texto_completo)
+
+    def extract_complete(self, pdf_path: str) -> Dict[str, Any]:
+        """
+        Complete extraction using all Common Extractors + Group B simple logic.
+        This method combines data from all extractors for complete compatibility.
+        """
+        try:
+            # Extract full text from PDF
+            doc = self._open_pdf(pdf_path)
+            texto_completo = ""
+
+            for page_num in range(doc.page_count):
+                page = doc[page_num]
+                texto_completo += page.get_text()
+
+            self._close_pdf_safely(doc)
+
+            # Use Common Extractors for shared data
+            dados_basicos = self.extract_basic_data(texto_completo)
+            dados_impostos = self.extract_tax_data(texto_completo)
+            dados_financeiros = self.extract_financial_data(texto_completo)
+
+            # Extract Group B specific consumption data
+            dados_consumo = self.extract(pdf_path)
+
+            # Merge all data
+            resultado_final = {}
+            resultado_final.update(dados_basicos)
+            resultado_final.update(dados_impostos)
+            resultado_final.update(dados_financeiros)
+            resultado_final.update(dados_consumo)
+
+            # Ensure bandeira code
+            resultado_final['bandeira_codigo'] = self.bandeira_codigo
+
+            if self.debug:
+                print(f"[B_SIMPLES] Extração completa: {len(resultado_final)} campos")
+
+            return resultado_final
+
+        except Exception as e:
+            self._error_print(f"Erro na extração completa B simples: {e}")
+            return {"erro": str(e)}
