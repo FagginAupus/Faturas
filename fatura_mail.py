@@ -11,7 +11,8 @@ import time
 import shutil
 
 # Importações dos seus módulos
-from Leitor_Faturas_PDF import FaturaProcessor
+# REMOVIDO: from Leitor_Faturas_PDF import FaturaProcessor
+from processors.fatura_processor_v2 import FaturaProcessorV2
 from Calculadora_AUPUS import CalculadoraAUPUS
 from Exportar_Planilha import exportar_para_excel
 from Ler_Planilha import ler_correspondencias_planilha
@@ -23,53 +24,54 @@ class ProcessadorFaturasEmail:
         self.SENHA = "#Aupus2024#"
         self.IMAP_SERVER = "imap.hostinger.com"
         self.ASSUNTO_INICIAL = "Fatura da Equatorial Energia em arquivo"
-        self.extractor = FaturaProcessor()
+        # REMOVIDO: self.extractor = FaturaProcessor()
+        self.processor_v2 = FaturaProcessorV2()
         self.calculadora = CalculadoraAUPUS()
         
         # Caminhos base
         self.CAMINHO_BASE = Path.home() / "Dropbox" / "AUPUS SMART" / "01. Club AUPUS" / "01. Usineiros" / "01. AUPUS ENERGIA" / "01. FATURAS"
         self.CAMINHO_PLANILHA = Path.home() / "Dropbox" / "AUPUS SMART" / "01. Club AUPUS" / "01. Usineiros" / "01. AUPUS ENERGIA" / "_Controles" / "Controle Clube Aupus.xlsx"
         self.CAMINHO_PASTA_LOCAL = Path.home() / "Dropbox" / "AUPUS SMART" / "01. Club AUPUS" / "01. Usineiros" / "01. AUPUS ENERGIA" / "01. FATURAS" / "2025" / "09.2025" / "Pendentes"
-    def processar_pdf_seguro(self, filepath):
+    def processar_pdf_seguro(self, temp_filepath: str) -> dict:
         """
-        Processa PDF de forma segura, garantindo que o arquivo seja liberado
-        Extrai APENAS os dados do PDF, sem fazer cálculos
+        Processa PDF de forma segura com o NOVO sistema modular V2.
+        Adiciona tratamento para tipos não suportados.
         """
-        dados = None
         try:
-            print(f"   📄 Extraindo dados do PDF: {os.path.basename(filepath)}")
-            
-            # SOLUÇÃO TEMPORÁRIA: Importar função diretamente
-            from Leitor_Faturas_PDF import extract_values_from_pdf
-            dados = extract_values_from_pdf(filepath)
-            
-            if dados:
-                print(f"   ✅ Dados extraídos - UC: {dados.get('uc', 'N/A')}")
-            else:
-                print(f"   ⚠️ Nenhum dado extraído do PDF")
-            
+            print(f"\n{'='*60}")
+            print(f"PROCESSANDO: {Path(temp_filepath).name}")
+            print(f"{'='*60}")
+
+            # USAR NOVO PROCESSADOR V2
+            dados_pdf = self.processor_v2.processar_fatura(temp_filepath)
+
+            # VERIFICAR SE É TIPO NÃO SUPORTADO
+            if dados_pdf.get('skip_processing'):
+                print(f"\n[SKIP] FATURA IGNORADA")
+                print(f"   Motivo: {dados_pdf.get('skip_reason', 'Tipo não suportado')}")
+                print(f"   UC: {dados_pdf.get('uc', 'não identificada')}")
+                print(f"{'='*60}\n")
+                return None  # Retornar None para indicar que deve pular
+
+            # VALIDAR CAMPOS OBRIGATÓRIOS
+            if not dados_pdf.get("uc"):
+                print(f"\n[ERRO] UC não encontrada no PDF")
+                return None
+
+            print(f"\n[OK] EXTRAÇÃO CONCLUÍDA")
+            print(f"   UC: {dados_pdf.get('uc')}")
+            print(f"   Grupo: {dados_pdf.get('grupo')}")
+            print(f"   Modalidade: {dados_pdf.get('modalidade_tarifaria')}")
+            print(f"   Consumo: {dados_pdf.get('consumo')} kWh")
+            print(f"{'='*60}\n")
+
+            return dados_pdf
+
         except Exception as e:
-            print(f"   ❌ Erro ao extrair dados do PDF: {e}")
-            # Em caso de erro, tentar método alternativo
-            try:
-                # Fallback: usar extractor simples
-                extractor_temp = FaturaProcessor()
-                # Verificar se tem método sem cálculos
-                if hasattr(extractor_temp, 'extrair_dados_apenas'):
-                    dados = extractor_temp.extrair_dados_apenas(filepath)
-                else:
-                    # Último recurso: criar dados básicos
-                    dados = {"uc": "erro_extracao", "erro": str(e)}
-                del extractor_temp
-            except:
-                dados = {"uc": "erro_critico", "erro": str(e)}
-            
-        finally:
-            # FORÇA LIMPEZA IMEDIATA DOS RECURSOS
-            gc.collect()
-            time.sleep(0.2)  # Pausa para garantir liberação de recursos PyMuPDF
-            
-        return dados
+            print(f"\n[ERRO] Erro ao processar PDF: {e}")
+            import traceback
+            traceback.print_exc()
+            return None
     
     def _aguardar_liberacao_arquivo(self, filepath, max_tentativas=10):
         """
@@ -303,11 +305,18 @@ class ProcessadorFaturasEmail:
                                         print(f"   ❌ Erro ao salvar arquivo temporário: {e}")
                                         continue
                                     
-                                    # PROCESSAR PDF
+                                    # PROCESSAR PDF COM NOVO SISTEMA V2
                                     dados_pdf = None
                                     try:
                                         print(f"   📋 Extraindo dados do PDF...")
                                         dados_pdf = self.processar_pdf_seguro(temp_filepath)
+
+                                        # ADICIONAR VERIFICAÇÃO DE SKIP:
+                                        if dados_pdf is None:
+                                            print(f"   [SKIP] PULANDO: {filename}")
+                                            # Remover arquivo temporário
+                                            self._remover_arquivo_seguro(temp_filepath)
+                                            continue  # Pular para próximo PDF
                                         
                                         if dados_pdf and dados_pdf.get("uc"):
                                             uc_pdf = dados_pdf.get("uc")
@@ -479,9 +488,14 @@ class ProcessadorFaturasEmail:
             try:
                 print(f"\n📄 [{i}/{len(arquivos_pdf)}] Processando: {os.path.basename(arquivo_pdf)}")
                 
-                # EXTRAIR DADOS DO PDF
+                # EXTRAIR DADOS DO PDF COM NOVO SISTEMA V2
                 dados_pdf = self.processar_pdf_seguro(arquivo_pdf)
-                
+
+                # ADICIONAR VERIFICAÇÃO DE SKIP:
+                if dados_pdf is None:
+                    print(f"   [SKIP] PULANDO: {os.path.basename(arquivo_pdf)}")
+                    continue  # Pular para próximo PDF
+
                 if dados_pdf and dados_pdf.get("uc"):
                     uc_pdf = dados_pdf.get("uc")
                     print(f"   🔍 UC encontrada: {uc_pdf}")
@@ -557,10 +571,11 @@ class ProcessadorFaturasEmail:
         """
         ⭐ NOVO: Função principal para processar faturas de pasta local
         """
-        print(f"\n{'='*60}")
-        print(f"PROCESSAMENTO DE FATURAS - PASTA LOCAL")
-        print(f"Pasta: {caminho_pasta}")
-        print(f"{'='*60}\n")
+        print(f"\n{'#'*60}")
+        print(f"# SISTEMA MODULAR V2 - PROCESSAMENTO DE FATURAS PASTA LOCAL")
+        print(f"# Data: {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}")
+        print(f"# Pasta: {caminho_pasta}")
+        print(f"{'#'*60}\n")
         
         try:
             # 1. Ler correspondências da planilha
@@ -629,10 +644,11 @@ class ProcessadorFaturasEmail:
         """
         Função principal de processamento COM VERIFICAÇÃO DE SIGLA
         """
-        print(f"\n{'='*60}")
-        print(f"PROCESSAMENTO DE FATURAS VIA EMAIL")
-        print(f"Data inicial: {data_inicio}")
-        print(f"{'='*60}\n")
+        print(f"\n{'#'*60}")
+        print(f"# SISTEMA MODULAR V2 - PROCESSAMENTO DE FATURAS VIA EMAIL")
+        print(f"# Data: {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}")
+        print(f"# Data inicial busca: {data_inicio}")
+        print(f"{'#'*60}\n")
         
         pasta_destino = self.criar_pasta_destino(data_inicio)
         
